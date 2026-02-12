@@ -205,3 +205,43 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+# ===== ML PROJECT EXCLUDES =====
+
+# datasets
+data/
+datasets/
+dataset/
+images/
+
+# training outputs
+outputs/
+results/
+runs/
+
+# checkpoints
+checkpoints/
+models/
+weights/
+
+# logs
+logs/
+wandb/
+
+# pytorch / lightning model files
+*.pt
+*.pth
+*.ckpt
+
+# temp / cache
+.cache/
+__pycache__/
+*.tmp
+*.log
+
+# notebooks
+.ipynb_checkpoints/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
