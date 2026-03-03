@@ -1,0 +1,3 @@
+[submodule "external/pytorch-image-classification"]
+	path = external/pytorch-image-classification
+	url = https://github.com/karasawatakumi/pytorch-image-classification.git
