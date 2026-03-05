@@ -57,6 +57,7 @@ class MultimodalClassifier(pl.LightningModule):
         dropout: float = 0.2,
         backbone: str = "resnet18",
         pretrained: bool = True,
+        pos_weight: list[float] | None = None,
     ) -> None:
         super().__init__()
         if mode not in _VALID_MODES:
@@ -90,7 +91,11 @@ class MultimodalClassifier(pl.LightningModule):
                 nn.Linear(fused_dim // 2, 2),
             )
 
-        self.loss_fn = nn.BCEWithLogitsLoss()
+        if pos_weight is not None:
+            self.register_buffer("pos_weight_tensor", torch.tensor(pos_weight))
+            self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight_tensor)
+        else:
+            self.loss_fn = nn.BCEWithLogitsLoss()
 
         # Per-label metrics: index 0 = DR_pos, index 1 = DME
         # validate_args=False avoids crashes on single-class batches / empty epochs
@@ -189,9 +194,13 @@ class MultimodalClassifier(pl.LightningModule):
 
     # ------------------------------------------------------------------
     def configure_optimizers(self):
+        encoder_params = [p for n, p in self.named_parameters() if "encoder" in n]
+        head_params    = [p for n, p in self.named_parameters() if "encoder" not in n]
         optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=self.hparams.lr,
+            [
+                {"params": encoder_params, "lr": self.hparams.lr * 0.1},
+                {"params": head_params,    "lr": self.hparams.lr},
+            ],
             weight_decay=self.hparams.weight_decay,
         )
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(

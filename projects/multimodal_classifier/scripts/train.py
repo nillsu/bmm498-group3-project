@@ -25,8 +25,9 @@ def _print_env() -> None:
     except ImportError:
         print("PyTorch : not installed")
 
+import torch
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+from pytorch_lightning.callbacks import Callback, EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
 
 # Allow running from repo root without installing the package
@@ -34,6 +35,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.datamodule import MultimodalDataModule
 from src.model import MultimodalClassifier
+
+
+class NaNLossCallback(Callback):
+    def on_before_backward(self, trainer: pl.Trainer, pl_module: pl.LightningModule, loss: torch.Tensor) -> None:
+        if torch.isnan(loss):
+            print(f"\nWARNING: NaN loss detected at step {trainer.global_step}. Stopping training.")
+            trainer.should_stop = True
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,7 +69,9 @@ def parse_args() -> argparse.Namespace:
                    help="Disable pretrained backbone weights.")
     p.add_argument("--fast_dev_run",  action="store_true",
                    help="Run 1 train+val batch only (sanity check).")
-    p.add_argument("--gradient_clip_val",       type=float, default=0.0)
+    p.add_argument("--gradient_clip_val",       type=float, default=1.0)
+    p.add_argument("--deterministic",           action="store_true",
+                   help="Enable torch.use_deterministic_algorithms(True).")
     p.add_argument("--accumulate_grad_batches", type=int,   default=1)
     p.add_argument("--log_every_n_steps",       type=int,   default=10)
     p.add_argument("--patience",                type=int,   default=5)
@@ -80,6 +90,19 @@ def main() -> None:
 
     if args.print_env:
         _print_env()
+
+    print(f"Torch   : {torch.__version__}")
+    print(f"CUDA    : {torch.version.cuda}")
+    if torch.cuda.is_available():
+        print(f"GPU     : {torch.cuda.get_device_name(0)}")
+    print(f"Mode    : {args.mode}")
+    print(f"Batch   : {args.batch_size}")
+
+    if args.precision == "16-mixed":
+        torch.backends.cuda.matmul.allow_tf32 = True
+
+    if args.deterministic:
+        torch.use_deterministic_algorithms(True)
 
     pl.seed_everything(args.seed, workers=True)
 
@@ -158,7 +181,7 @@ def main() -> None:
         limit_train_batches=args.limit_train_batches,
         limit_val_batches=args.limit_val_batches,
         fast_dev_run=args.fast_dev_run,
-        callbacks=[checkpoint_cb, early_stop_cb],
+        callbacks=[checkpoint_cb, early_stop_cb, NaNLossCallback()],
         logger=logger,
     )
 
