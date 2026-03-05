@@ -13,7 +13,7 @@ import pytorch_lightning as pl
 import timm
 from torchmetrics.classification import BinaryAUROC, BinaryAccuracy, BinaryF1Score
 
-_VALID_MODES     = {"fundus", "oct", "fusion", "fusion_cross_attention"}
+_VALID_MODES     = {"fundus", "oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}
 _VALID_BACKBONES = {"resnet18", "resnet34", "efficientnet_b0"}
 
 
@@ -119,14 +119,14 @@ class MultimodalClassifier(pl.LightningModule):
         self.mode = mode
 
         # Build encoders only for needed branches
-        if mode in {"fundus", "fusion", "fusion_cross_attention"}:
+        if mode in {"fundus", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}:
             self.fundus_encoder = _make_encoder(backbone, in_chans=3, pretrained=pretrained)
             fundus_dim = _infer_dim(self.fundus_encoder, in_chans=3)
             self.fundus_head = nn.Linear(fundus_dim, 2)
         else:
             fundus_dim = 0
 
-        if mode in {"oct", "fusion", "fusion_cross_attention"}:
+        if mode in {"oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}:
             self.oct_encoder = _make_encoder(backbone, in_chans=1, pretrained=pretrained)
             oct_dim = _infer_dim(self.oct_encoder, in_chans=1)
             if mode in {"oct", "fusion"}:
@@ -150,6 +150,19 @@ class MultimodalClassifier(pl.LightningModule):
             self.f_attn_proj = nn.Identity() if f_feat_dim == attn_dim else nn.Linear(f_feat_dim, attn_dim)
             self.o_attn_proj = nn.Identity() if o_feat_dim == attn_dim else nn.Linear(o_feat_dim, attn_dim)
             self.cross_attn  = CrossAttentionFusion(
+                embed_dim=attn_dim, num_heads=attn_heads, dropout=attn_dropout,
+            )
+
+        if mode == "fusion_bi_cross_attention":
+            f_feat_dim = _infer_feat_dim(self.fundus_encoder, in_chans=3)
+            o_feat_dim = _infer_feat_dim(self.oct_encoder,    in_chans=1)
+            attn_dim   = f_feat_dim
+            self.bi_f_proj = nn.Identity() if f_feat_dim == attn_dim else nn.Linear(f_feat_dim, attn_dim)
+            self.bi_o_proj = nn.Identity() if o_feat_dim == attn_dim else nn.Linear(o_feat_dim, attn_dim)
+            self.cross_attn_f2o = CrossAttentionFusion(
+                embed_dim=attn_dim, num_heads=attn_heads, dropout=attn_dropout,
+            )
+            self.cross_attn_o2f = CrossAttentionFusion(
                 embed_dim=attn_dim, num_heads=attn_heads, dropout=attn_dropout,
             )
 
@@ -195,6 +208,17 @@ class MultimodalClassifier(pl.LightningModule):
             fused  = self.cross_attn(q, kv)                 # (B, N_q,  attn_dim)
             pooled = fused.mean(dim=1)                      # (B, attn_dim)
             return self.fundus_head(pooled)
+
+        if self.mode == "fusion_bi_cross_attention":
+            f_feat = self.fundus_encoder.forward_features(batch["fundus"])
+            o_feat = self.oct_encoder.forward_features(batch["oct"])
+            f_tok = self.bi_f_proj(_feat_to_tokens(f_feat))  # (B, N_f, attn_dim)
+            o_tok = self.bi_o_proj(_feat_to_tokens(o_feat))  # (B, N_o, attn_dim)
+            f2o = self.cross_attn_f2o(f_tok, o_tok)          # (B, N_f, attn_dim)
+            o2f = self.cross_attn_o2f(o_tok, f_tok)          # (B, N_o, attn_dim)
+            f_vec = f2o.mean(dim=1)                           # (B, attn_dim)
+            o_vec = o2f.mean(dim=1)                           # (B, attn_dim)
+            return self.fundus_head(0.5 * (f_vec + o_vec))
 
         # fusion (concat)
         f_feat = self.fundus_encoder(batch["fundus"])
