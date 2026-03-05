@@ -18,12 +18,23 @@ Usage:
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 import pytorch_lightning as pl
+import torch
 from torch.utils.data import DataLoader
+
+
+def _worker_init_fn(worker_id: int) -> None:
+    """Seed each DataLoader worker for reproducible augmentation."""
+    import random
+    import numpy as np
+    seed = torch.initial_seed() % (2 ** 32)
+    random.seed(seed + worker_id)
+    np.random.seed(seed + worker_id)
 
 from .dataset import MultimodalEyeDataset
 from .transforms import get_fundus_transforms, get_oct_transforms
@@ -67,7 +78,8 @@ class MultimodalDataModule(pl.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.seed = seed
-        self.pin_memory = pin_memory
+        # Only pin memory when CUDA is available; pinning on CPU is wasteful
+        self.pin_memory = pin_memory and torch.cuda.is_available()
         self.train_csv = Path(train_csv) if train_csv is not None else None
         self.val_csv   = Path(val_csv)   if val_csv   is not None else None
         self.test_csv  = Path(test_csv)  if test_csv  is not None else None
@@ -142,6 +154,8 @@ class MultimodalDataModule(pl.LightningDataModule):
 
     # ------------------------------------------------------------------
     def _make_loader(self, dataset: MultimodalEyeDataset, shuffle: bool, drop_last: bool) -> DataLoader:
+        # persistent_workers is unreliable on Windows; disable it there
+        persistent = self.num_workers > 0 and sys.platform != "win32"
         return DataLoader(
             dataset,
             batch_size=self.batch_size,
@@ -149,7 +163,8 @@ class MultimodalDataModule(pl.LightningDataModule):
             drop_last=drop_last,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            persistent_workers=self.num_workers > 0,
+            persistent_workers=persistent,
+            worker_init_fn=_worker_init_fn if self.num_workers > 0 else None,
         )
 
     def train_dataloader(self) -> DataLoader:

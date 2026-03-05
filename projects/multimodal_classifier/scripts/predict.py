@@ -12,6 +12,19 @@ import argparse
 import sys
 from pathlib import Path
 
+
+def _print_env() -> None:
+    print(f"Python  : {sys.version}")
+    try:
+        import torch
+        print(f"PyTorch : {torch.__version__}")
+        print(f"CUDA    : {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+    except ImportError:
+        print("PyTorch : not installed")
+
 import pandas as pd
 import torch
 
@@ -35,11 +48,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--image_size",  type=int, default=224)
     p.add_argument("--split",       default="test", choices=["test", "val"])
+    p.add_argument("--threshold",   type=float, default=0.5,
+                   help="Probability threshold for binary predictions (default 0.5).")
+    p.add_argument("--print_env",   action="store_true",
+                   help="Print Python/CUDA environment info at startup.")
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+
+    if args.print_env:
+        _print_env()
 
     dm = MultimodalDataModule(
         csv_path=args.csv_path,
@@ -92,8 +112,8 @@ def main() -> None:
                     "sample_id": sid,
                     "DR_prob":   round(p[0], 6),
                     "DME_prob":  round(p[1], 6),
-                    "DR_pred":   int(p[0] > 0.5),
-                    "DME_pred":  int(p[1] > 0.5),
+                    "DR_pred":   int(p[0] > args.threshold),
+                    "DME_pred":  int(p[1] > args.threshold),
                 }
                 if include_labels:
                     row["DR_true"]  = int(labels[i, 0].item())
@@ -107,6 +127,22 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_path, index=False)
     print(f"Saved {len(df)} predictions to {output_path}")
+
+    if include_labels and len(df) > 0:
+        import numpy as np
+
+        def _f1_binary(y_true: "np.ndarray", y_pred: "np.ndarray") -> float:
+            tp = int(((y_true == 1) & (y_pred == 1)).sum())
+            fp = int(((y_true == 0) & (y_pred == 1)).sum())
+            fn = int(((y_true == 1) & (y_pred == 0)).sum())
+            denom = 2 * tp + fp + fn
+            return 2 * tp / denom if denom > 0 else float("nan")
+
+        dr_t, dr_p   = df["DR_true"].values, df["DR_pred"].values
+        dme_t, dme_p = df["DME_true"].values, df["DME_pred"].values
+        print(f"\nEvaluation (threshold={args.threshold}):")
+        print(f"  DR  — accuracy={float((dr_t  == dr_p ).mean()):.4f}  f1={_f1_binary(dr_t,  dr_p ):.4f}")
+        print(f"  DME — accuracy={float((dme_t == dme_p).mean()):.4f}  f1={_f1_binary(dme_t, dme_p):.4f}")
 
 
 if __name__ == "__main__":

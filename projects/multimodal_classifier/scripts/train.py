@@ -12,6 +12,19 @@ import json
 import sys
 from pathlib import Path
 
+
+def _print_env() -> None:
+    print(f"Python  : {sys.version}")
+    try:
+        import torch
+        print(f"PyTorch : {torch.__version__}")
+        print(f"CUDA    : {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+    except ImportError:
+        print("PyTorch : not installed")
+
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
@@ -42,11 +55,32 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output_dir",   required=True)
     p.add_argument("--precision",    default="16-mixed", choices=["32", "16-mixed", "bf16-mixed"])
     p.add_argument("--backbone",     default="resnet18", choices=["resnet18", "resnet34", "efficientnet_b0"])
+    p.add_argument("--pretrained",    action="store_true",  default=True,
+                   help="Use pretrained backbone (default: True).")
+    p.add_argument("--no_pretrained", action="store_false", dest="pretrained",
+                   help="Disable pretrained backbone weights.")
+    p.add_argument("--fast_dev_run",  action="store_true",
+                   help="Run 1 train+val batch only (sanity check).")
+    p.add_argument("--gradient_clip_val",       type=float, default=0.0)
+    p.add_argument("--accumulate_grad_batches", type=int,   default=1)
+    p.add_argument("--log_every_n_steps",       type=int,   default=10)
+    p.add_argument("--patience",                type=int,   default=5)
+    p.add_argument("--limit_train_batches",     type=float, default=1.0)
+    p.add_argument("--limit_val_batches",       type=float, default=1.0)
+    p.add_argument("--monitor",      default="val_dr_auc",
+                   choices=["val_dr_auc", "val_dme_auc", "val/loss"],
+                   help="Metric to monitor for checkpointing and early stopping.")
+    p.add_argument("--print_env",    action="store_true",
+                   help="Print Python/CUDA environment info at startup.")
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+
+    if args.print_env:
+        _print_env()
+
     pl.seed_everything(args.seed, workers=True)
 
     output_dir = Path(args.output_dir)
@@ -78,19 +112,37 @@ def main() -> None:
         weight_decay=args.weight_decay,
         dropout=args.dropout,
         backbone=args.backbone,
+        pretrained=args.pretrained,
     )
+
+    # Pre-flight: setup data and print one batch's shapes to catch path issues early
+    print("\n--- Pre-flight data check ---")
+    dm.setup("fit")
+    for split_name, loader_fn in [("train", dm.train_dataloader), ("val", dm.val_dataloader)]:
+        batch = next(iter(loader_fn()))
+        print(f"  {split_name} batch:")
+        if "fundus" in batch:
+            print(f"    fundus : {tuple(batch['fundus'].shape)}")
+        if "oct" in batch:
+            print(f"    oct    : {tuple(batch['oct'].shape)}")
+        print(f"    labels : {tuple(batch['labels'].shape)}")
+    print("--- Pre-flight OK ---\n")
+
+    # Dynamic monitor mode and checkpoint filename
+    monitor_mode  = "min" if args.monitor == "val/loss" else "max"
+    monitor_token = args.monitor.replace("/", "_")   # safe filename token
 
     checkpoint_cb = ModelCheckpoint(
         dirpath=ckpt_dir,
-        filename="best-{epoch}-{val_dr_auc:.4f}",
-        monitor="val_dr_auc",
-        mode="max",
+        filename=f"best-{{epoch}}-{{{monitor_token}:.4f}}",
+        monitor=args.monitor,
+        mode=monitor_mode,
         save_top_k=1,
     )
     early_stop_cb = EarlyStopping(
-        monitor="val_dr_auc",
-        mode="max",
-        patience=5,
+        monitor=args.monitor,
+        mode=monitor_mode,
+        patience=args.patience,
     )
     logger = CSVLogger(save_dir=str(output_dir), name="logs")
 
@@ -100,7 +152,12 @@ def main() -> None:
         devices="auto",
         precision=args.precision,
         deterministic=True,
-        log_every_n_steps=10,
+        log_every_n_steps=args.log_every_n_steps,
+        gradient_clip_val=args.gradient_clip_val,
+        accumulate_grad_batches=args.accumulate_grad_batches,
+        limit_train_batches=args.limit_train_batches,
+        limit_val_batches=args.limit_val_batches,
+        fast_dev_run=args.fast_dev_run,
         callbacks=[checkpoint_cb, early_stop_cb],
         logger=logger,
     )

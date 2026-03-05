@@ -39,6 +39,7 @@ class MultimodalEyeDataset(Dataset):
         mode: Literal["fundus", "oct", "fusion"],
         transform_fundus: Optional[Callable] = None,
         transform_oct: Optional[Callable] = None,
+        verify_files: bool = False,
     ) -> None:
         if mode not in _VALID_MODES:
             raise ValueError(f"mode must be one of {_VALID_MODES}, got '{mode}'")
@@ -47,7 +48,8 @@ class MultimodalEyeDataset(Dataset):
         if not data_root.exists():
             raise FileNotFoundError(
                 f"data_root not found: {data_root}\n"
-                "Check that Google Drive is mounted and the path is correct."
+                "Check that Google Drive is mounted and the path is correct.\n"
+                "  from google.colab import drive; drive.mount('/content/drive')"
             )
 
         if mode in ("fundus", "fusion") and transform_fundus is None:
@@ -60,6 +62,32 @@ class MultimodalEyeDataset(Dataset):
         self.mode = mode
         self.transform_fundus = transform_fundus
         self.transform_oct = transform_oct
+
+        if verify_files:
+            self._verify_files()
+
+    def _verify_files(self) -> None:
+        """Scan the dataframe for missing image files and print a summary (does not raise)."""
+        missing_fundus: list[str] = []
+        missing_oct:    list[str] = []
+        for _, row in self.df.iterrows():
+            sid = str(row["sample_id"])
+            if self.mode in ("fundus", "fusion"):
+                if not (self.data_root / str(row["fundus_rel"])).exists():
+                    missing_fundus.append(sid)
+            if self.mode in ("oct", "fusion"):
+                if not (self.data_root / str(row["oct_rel"])).exists():
+                    missing_oct.append(sid)
+        total = len(self.df)
+        print(
+            f"[verify_files] total={total}  "
+            f"missing_fundus={len(missing_fundus)}  "
+            f"missing_oct={len(missing_oct)}"
+        )
+        if missing_fundus:
+            print(f"  First 5 missing fundus : {missing_fundus[:5]}")
+        if missing_oct:
+            print(f"  First 5 missing oct    : {missing_oct[:5]}")
 
     def __len__(self) -> int:
         return len(self.df)
@@ -86,7 +114,11 @@ class MultimodalEyeDataset(Dataset):
             fundus_path = self.data_root / str(row["fundus_rel"])
             if not fundus_path.exists():
                 raise FileNotFoundError(
-                    f"[{sample_id}] Fundus image not found: {fundus_path}"
+                    f"[{sample_id}] Fundus image not found.\n"
+                    f"  data_root  : {self.data_root}\n"
+                    f"  fundus_rel : {row['fundus_rel']!r}\n"
+                    f"  full path  : {fundus_path}\n"
+                    "  Hint: verify Drive is mounted and 'fundus_rel' paths are correct."
                 )
             img = Image.open(fundus_path).convert("RGB")
             out["fundus"] = self.transform_fundus(img)
@@ -96,7 +128,11 @@ class MultimodalEyeDataset(Dataset):
             oct_path = self.data_root / str(row["oct_rel"])
             if not oct_path.exists():
                 raise FileNotFoundError(
-                    f"[{sample_id}] OCT image not found: {oct_path}"
+                    f"[{sample_id}] OCT image not found.\n"
+                    f"  data_root : {self.data_root}\n"
+                    f"  oct_rel   : {row['oct_rel']!r}\n"
+                    f"  full path : {oct_path}\n"
+                    "  Hint: verify Drive is mounted and 'oct_rel' paths are correct."
                 )
             img = Image.open(oct_path).convert("L")
             out["oct"] = self.transform_oct(img)

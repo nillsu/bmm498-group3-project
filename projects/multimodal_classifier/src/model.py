@@ -17,21 +17,33 @@ _VALID_MODES     = {"fundus", "oct", "fusion"}
 _VALID_BACKBONES = {"resnet18", "resnet34", "efficientnet_b0"}
 
 
-def _make_encoder(backbone: str, in_chans: int = 3) -> nn.Module:
+def _make_encoder(backbone: str, in_chans: int = 3, pretrained: bool = True) -> nn.Module:
     if backbone not in _VALID_BACKBONES:
         raise ValueError(f"backbone={backbone!r} must be one of {_VALID_BACKBONES}.")
-    return timm.create_model(
-        backbone,
-        pretrained=True,
-        num_classes=0,
-        global_pool="avg",
-        in_chans=in_chans,
-    )
+    try:
+        return timm.create_model(
+            backbone, pretrained=pretrained, num_classes=0,
+            global_pool="avg", in_chans=in_chans,
+        )
+    except Exception as exc:
+        if pretrained:
+            print(
+                f"WARNING: Failed to download pretrained weights for '{backbone}' "
+                f"({exc}). Falling back to random initialisation (pretrained=False)."
+            )
+            return timm.create_model(
+                backbone, pretrained=False, num_classes=0,
+                global_pool="avg", in_chans=in_chans,
+            )
+        raise
 
 
 def _infer_dim(encoder: nn.Module, in_chans: int, image_size: int = 224) -> int:
     with torch.no_grad():
-        device = next(encoder.parameters()).device
+        try:
+            device = next(encoder.parameters()).device
+        except StopIteration:
+            device = torch.device("cpu")
         dummy = torch.zeros(1, in_chans, image_size, image_size, device=device)
         return encoder(dummy).shape[1]
 
@@ -44,6 +56,7 @@ class MultimodalClassifier(pl.LightningModule):
         weight_decay: float = 0.0,
         dropout: float = 0.2,
         backbone: str = "resnet18",
+        pretrained: bool = True,
     ) -> None:
         super().__init__()
         if mode not in _VALID_MODES:
@@ -55,14 +68,14 @@ class MultimodalClassifier(pl.LightningModule):
 
         # Build encoders only for needed branches
         if mode in {"fundus", "fusion"}:
-            self.fundus_encoder = _make_encoder(backbone, in_chans=3)
+            self.fundus_encoder = _make_encoder(backbone, in_chans=3, pretrained=pretrained)
             fundus_dim = _infer_dim(self.fundus_encoder, in_chans=3)
             self.fundus_head = nn.Linear(fundus_dim, 2)
         else:
             fundus_dim = 0
 
         if mode in {"oct", "fusion"}:
-            self.oct_encoder = _make_encoder(backbone, in_chans=1)
+            self.oct_encoder = _make_encoder(backbone, in_chans=1, pretrained=pretrained)
             oct_dim = _infer_dim(self.oct_encoder, in_chans=1)
             self.oct_head = nn.Linear(oct_dim, 2)
         else:
@@ -80,14 +93,15 @@ class MultimodalClassifier(pl.LightningModule):
         self.loss_fn = nn.BCEWithLogitsLoss()
 
         # Per-label metrics: index 0 = DR_pos, index 1 = DME
-        self.train_dr_auc  = BinaryAUROC()
-        self.train_dme_auc = BinaryAUROC()
-        self.val_dr_auc    = BinaryAUROC()
-        self.val_dme_auc   = BinaryAUROC()
-        self.val_dr_f1     = BinaryF1Score()
-        self.val_dme_f1    = BinaryF1Score()
-        self.val_dr_acc    = BinaryAccuracy()
-        self.val_dme_acc   = BinaryAccuracy()
+        # validate_args=False avoids crashes on single-class batches / empty epochs
+        self.train_dr_auc  = BinaryAUROC(validate_args=False)
+        self.train_dme_auc = BinaryAUROC(validate_args=False)
+        self.val_dr_auc    = BinaryAUROC(validate_args=False)
+        self.val_dme_auc   = BinaryAUROC(validate_args=False)
+        self.val_dr_f1     = BinaryF1Score(validate_args=False)
+        self.val_dme_f1    = BinaryF1Score(validate_args=False)
+        self.val_dr_acc    = BinaryAccuracy(validate_args=False)
+        self.val_dme_acc   = BinaryAccuracy(validate_args=False)
 
     # ------------------------------------------------------------------
     def forward(self, batch: dict) -> torch.Tensor:
@@ -130,11 +144,10 @@ class MultimodalClassifier(pl.LightningModule):
         lbl_dr   = labels[:, 0].long()
         lbl_dme  = labels[:, 1].long()
 
+        # Accumulate metrics; epoch-level logging happens in on_*_epoch_end
         if stage == "train":
             self.train_dr_auc.update(prob_dr, lbl_dr)
             self.train_dme_auc.update(prob_dme, lbl_dme)
-            self.log("train_dr_auc",  self.train_dr_auc,  on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
-            self.log("train_dme_auc", self.train_dme_auc, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
         else:
             self.val_dr_auc.update(prob_dr,   lbl_dr)
             self.val_dme_auc.update(prob_dme, lbl_dme)
@@ -142,12 +155,6 @@ class MultimodalClassifier(pl.LightningModule):
             self.val_dme_f1.update(prob_dme,  lbl_dme)
             self.val_dr_acc.update(prob_dr,   lbl_dr)
             self.val_dme_acc.update(prob_dme, lbl_dme)
-            self.log("val_dr_auc",  self.val_dr_auc,  on_step=False, on_epoch=True, prog_bar=True,  sync_dist=True)
-            self.log("val_dme_auc", self.val_dme_auc, on_step=False, on_epoch=True, prog_bar=True,  sync_dist=True)
-            self.log("val_dr_f1",   self.val_dr_f1,   on_step=False, on_epoch=True, prog_bar=True,  sync_dist=True)
-            self.log("val_dme_f1",  self.val_dme_f1,  on_step=False, on_epoch=True, prog_bar=True,  sync_dist=True)
-            self.log("val_dr_acc",  self.val_dr_acc,  on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
-            self.log("val_dme_acc", self.val_dme_acc, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
 
         return loss
 
@@ -156,6 +163,29 @@ class MultimodalClassifier(pl.LightningModule):
 
     def validation_step(self, batch: dict, batch_idx: int) -> None:
         self._shared_step(batch, "val")
+
+    # ------------------------------------------------------------------
+    def _safe_compute_log(self, metric, name: str, prog_bar: bool = False) -> None:
+        """Compute metric, log it, reset it. Logs NaN if compute fails (e.g. single-class epoch)."""
+        try:
+            val = metric.compute()
+            self.log(name, val, prog_bar=prog_bar, sync_dist=True)
+        except Exception:
+            self.log(name, float("nan"), prog_bar=prog_bar, sync_dist=True)
+        finally:
+            metric.reset()
+
+    def on_train_epoch_end(self) -> None:
+        self._safe_compute_log(self.train_dr_auc,  "train_dr_auc",  prog_bar=False)
+        self._safe_compute_log(self.train_dme_auc, "train_dme_auc", prog_bar=False)
+
+    def on_validation_epoch_end(self) -> None:
+        self._safe_compute_log(self.val_dr_auc,  "val_dr_auc",  prog_bar=True)
+        self._safe_compute_log(self.val_dme_auc, "val_dme_auc", prog_bar=True)
+        self._safe_compute_log(self.val_dr_f1,   "val_dr_f1",   prog_bar=True)
+        self._safe_compute_log(self.val_dme_f1,  "val_dme_f1",  prog_bar=True)
+        self._safe_compute_log(self.val_dr_acc,  "val_dr_acc",  prog_bar=False)
+        self._safe_compute_log(self.val_dme_acc, "val_dme_acc", prog_bar=False)
 
     # ------------------------------------------------------------------
     def configure_optimizers(self):

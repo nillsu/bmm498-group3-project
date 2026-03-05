@@ -192,6 +192,46 @@ Output CSV columns: `sample_id, DR_prob, DME_prob`.
 
 ---
 
+## Colab run checklist
+
+```python
+# 1. Mount Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# 2. Install dependencies
+!pip install pytorch-lightning timm torchmetrics torchvision pillow pandas -q
+
+# 3. Clone / navigate to repo
+import os; os.chdir('/content/drive/MyDrive/bmm498-group3-project')
+```
+
+```bash
+# 4. Verify environment and data
+python projects/multimodal_classifier/scripts/colab_setup_check.py \
+  --csv_path /content/drive/MyDrive/bmm498/splits_clean.csv \
+  --data_root /content/drive/MyDrive/bmm498/bmm498_data
+
+# 5. Train (single fold, fusion mode)
+python projects/multimodal_classifier/scripts/train.py \
+  --csv_path   /content/drive/MyDrive/bmm498/splits_clean.csv \
+  --data_root  /content/drive/MyDrive/bmm498/bmm498_data \
+  --output_dir /content/drive/MyDrive/bmm498/runs/fusion_run1 \
+  --mode fusion --epochs 20 --batch_size 16 --print_env
+
+# 6. Export predictions from val split
+python projects/multimodal_classifier/scripts/predict.py \
+  --csv_path   /content/drive/MyDrive/bmm498/splits_clean.csv \
+  --data_root  /content/drive/MyDrive/bmm498/bmm498_data \
+  --checkpoint /content/drive/MyDrive/bmm498/runs/fusion_run1/checkpoints/best-*.ckpt \
+  --mode fusion --split val \
+  --output_csv /content/drive/MyDrive/bmm498/runs/fusion_run1/predictions.csv
+```
+
+> **Tip:** Add `--fast_dev_run` to `train.py` for a 1-batch smoke test before a full run.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |
