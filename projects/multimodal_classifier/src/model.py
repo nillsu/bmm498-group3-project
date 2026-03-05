@@ -11,13 +11,17 @@ import torch
 import torch.nn as nn
 import pytorch_lightning as pl
 import timm
+from torchmetrics.classification import BinaryAUROC, BinaryAccuracy, BinaryF1Score
 
-_VALID_MODES = {"fundus", "oct", "fusion"}
+_VALID_MODES     = {"fundus", "oct", "fusion"}
+_VALID_BACKBONES = {"resnet18", "resnet34", "efficientnet_b0"}
 
 
-def _make_encoder(in_chans: int = 3) -> nn.Module:
+def _make_encoder(backbone: str, in_chans: int = 3) -> nn.Module:
+    if backbone not in _VALID_BACKBONES:
+        raise ValueError(f"backbone={backbone!r} must be one of {_VALID_BACKBONES}.")
     return timm.create_model(
-        "resnet18",
+        backbone,
         pretrained=True,
         num_classes=0,
         global_pool="avg",
@@ -39,23 +43,26 @@ class MultimodalClassifier(pl.LightningModule):
         lr: float = 1e-3,
         weight_decay: float = 0.0,
         dropout: float = 0.2,
+        backbone: str = "resnet18",
     ) -> None:
         super().__init__()
         if mode not in _VALID_MODES:
             raise ValueError(f"mode={mode!r} is not valid. Expected one of {_VALID_MODES}.")
+        if backbone not in _VALID_BACKBONES:
+            raise ValueError(f"backbone={backbone!r} must be one of {_VALID_BACKBONES}.")
         self.save_hyperparameters()
         self.mode = mode
 
         # Build encoders only for needed branches
         if mode in {"fundus", "fusion"}:
-            self.fundus_encoder = _make_encoder(in_chans=3)
+            self.fundus_encoder = _make_encoder(backbone, in_chans=3)
             fundus_dim = _infer_dim(self.fundus_encoder, in_chans=3)
             self.fundus_head = nn.Linear(fundus_dim, 2)
         else:
             fundus_dim = 0
 
         if mode in {"oct", "fusion"}:
-            self.oct_encoder = _make_encoder(in_chans=1)
+            self.oct_encoder = _make_encoder(backbone, in_chans=1)
             oct_dim = _infer_dim(self.oct_encoder, in_chans=1)
             self.oct_head = nn.Linear(oct_dim, 2)
         else:
@@ -71,6 +78,16 @@ class MultimodalClassifier(pl.LightningModule):
             )
 
         self.loss_fn = nn.BCEWithLogitsLoss()
+
+        # Per-label metrics: index 0 = DR_pos, index 1 = DME
+        self.train_dr_auc  = BinaryAUROC()
+        self.train_dme_auc = BinaryAUROC()
+        self.val_dr_auc    = BinaryAUROC()
+        self.val_dme_auc   = BinaryAUROC()
+        self.val_dr_f1     = BinaryF1Score()
+        self.val_dme_f1    = BinaryF1Score()
+        self.val_dr_acc    = BinaryAccuracy()
+        self.val_dme_acc   = BinaryAccuracy()
 
     # ------------------------------------------------------------------
     def forward(self, batch: dict) -> torch.Tensor:
@@ -106,6 +123,32 @@ class MultimodalClassifier(pl.LightningModule):
         loss = self.loss_fn(logits, labels)
         self.log(f"{stage}/loss", loss, prog_bar=True, on_step=(stage == "train"),
                  on_epoch=True, sync_dist=True)
+
+        probs    = torch.sigmoid(logits)
+        prob_dr  = probs[:, 0]
+        prob_dme = probs[:, 1]
+        lbl_dr   = labels[:, 0].long()
+        lbl_dme  = labels[:, 1].long()
+
+        if stage == "train":
+            self.train_dr_auc.update(prob_dr, lbl_dr)
+            self.train_dme_auc.update(prob_dme, lbl_dme)
+            self.log("train_dr_auc",  self.train_dr_auc,  on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
+            self.log("train_dme_auc", self.train_dme_auc, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
+        else:
+            self.val_dr_auc.update(prob_dr,   lbl_dr)
+            self.val_dme_auc.update(prob_dme, lbl_dme)
+            self.val_dr_f1.update(prob_dr,    lbl_dr)
+            self.val_dme_f1.update(prob_dme,  lbl_dme)
+            self.val_dr_acc.update(prob_dr,   lbl_dr)
+            self.val_dme_acc.update(prob_dme, lbl_dme)
+            self.log("val_dr_auc",  self.val_dr_auc,  on_step=False, on_epoch=True, prog_bar=True,  sync_dist=True)
+            self.log("val_dme_auc", self.val_dme_auc, on_step=False, on_epoch=True, prog_bar=True,  sync_dist=True)
+            self.log("val_dr_f1",   self.val_dr_f1,   on_step=False, on_epoch=True, prog_bar=True,  sync_dist=True)
+            self.log("val_dme_f1",  self.val_dme_f1,  on_step=False, on_epoch=True, prog_bar=True,  sync_dist=True)
+            self.log("val_dr_acc",  self.val_dr_acc,  on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
+            self.log("val_dme_acc", self.val_dme_acc, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
+
         return loss
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
@@ -116,8 +159,12 @@ class MultimodalClassifier(pl.LightningModule):
 
     # ------------------------------------------------------------------
     def configure_optimizers(self):
-        return torch.optim.AdamW(
+        optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.hparams.lr,
             weight_decay=self.hparams.weight_decay,
         )
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=self.trainer.max_epochs
+        )
+        return {"optimizer": optimizer, "lr_scheduler": scheduler}

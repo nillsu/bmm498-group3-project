@@ -63,13 +63,16 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
+    include_labels = False
     if args.split == "val":
         loader = dm.val_dataloader()
+        include_labels = True
     else:
         loader = dm.test_dataloader()
         if not loader:
             print("No test split found in CSV; using validation split for prediction export.")
             loader = dm.val_dataloader()
+            include_labels = True
 
     rows: list[dict] = []
     with torch.no_grad():
@@ -79,13 +82,27 @@ def main() -> None:
                 k: (v.to(device) if isinstance(v, torch.Tensor) else v)
                 for k, v in batch.items()
             }
-            logits = model(batch_dev)                      # (B, 2)
-            probs  = torch.sigmoid(logits).cpu()           # (B, 2)
+            logits     = model(batch_dev)                  # (B, 2)
+            probs      = torch.sigmoid(logits).cpu()       # (B, 2)
             sample_ids = batch["sample_id"]                # list[str]
-            for sid, p in zip(sample_ids, probs.tolist()):
-                rows.append({"sample_id": sid, "DR_prob": p[0], "DME_prob": p[1]})
+            labels     = batch["labels"].cpu() if include_labels else None
 
-    df = pd.DataFrame(rows, columns=["sample_id", "DR_prob", "DME_prob"])
+            for i, (sid, p) in enumerate(zip(sample_ids, probs.tolist())):
+                row = {
+                    "sample_id": sid,
+                    "DR_prob":   round(p[0], 6),
+                    "DME_prob":  round(p[1], 6),
+                    "DR_pred":   int(p[0] > 0.5),
+                    "DME_pred":  int(p[1] > 0.5),
+                }
+                if include_labels:
+                    row["DR_true"]  = int(labels[i, 0].item())
+                    row["DME_true"] = int(labels[i, 1].item())
+                rows.append(row)
+
+    base_cols = ["sample_id", "DR_prob", "DME_prob", "DR_pred", "DME_pred"]
+    all_cols  = base_cols + (["DR_true", "DME_true"] if include_labels else [])
+    df = pd.DataFrame(rows, columns=all_cols)
     output_path = Path(args.output_csv)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_path, index=False)

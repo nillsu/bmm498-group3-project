@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -40,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed",         type=int,   default=42)
     p.add_argument("--output_dir",   required=True)
     p.add_argument("--precision",    default="16-mixed", choices=["32", "16-mixed", "bf16-mixed"])
+    p.add_argument("--backbone",     default="resnet18", choices=["resnet18", "resnet34", "efficientnet_b0"])
     return p.parse_args()
 
 
@@ -50,6 +52,12 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     ckpt_dir   = output_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save CLI config for reproducibility
+    config_path = output_dir / "config.json"
+    with open(config_path, "w") as f:
+        json.dump(vars(args), f, indent=2)
+    print(f"Config saved to : {config_path}")
 
     dm = MultimodalDataModule(
         csv_path=args.csv_path,
@@ -69,18 +77,19 @@ def main() -> None:
         lr=args.lr,
         weight_decay=args.weight_decay,
         dropout=args.dropout,
+        backbone=args.backbone,
     )
 
     checkpoint_cb = ModelCheckpoint(
         dirpath=ckpt_dir,
-        filename="best-{epoch}-{val_loss:.4f}",
-        monitor="val/loss",
-        mode="min",
+        filename="best-{epoch}-{val_dr_auc:.4f}",
+        monitor="val_dr_auc",
+        mode="max",
         save_top_k=1,
     )
     early_stop_cb = EarlyStopping(
-        monitor="val/loss",
-        mode="min",
+        monitor="val_dr_auc",
+        mode="max",
         patience=5,
     )
     logger = CSVLogger(save_dir=str(output_dir), name="logs")
