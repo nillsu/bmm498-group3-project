@@ -245,3 +245,15 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+# Colab / Google Drive mount safety
+drive/
+content/drive/
+MyDrive/
+
+# Project-specific datasets
+fundus/
+oct_real/
+oct_pseudo/
+
+# Lightning logs
+lightning_logs/
