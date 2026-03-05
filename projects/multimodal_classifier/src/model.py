@@ -1,7 +1,7 @@
 """
 MultimodalClassifier — PyTorch Lightning module for fundus + OCT classification.
 
-Supports three modes: fundus, oct, fusion.
+Supports four modes: fundus, oct, fusion, fusion_cross_attention.
 Mid-level fusion: two ResNet-18 encoders, per-branch heads plus a fusion head.
 """
 
@@ -13,7 +13,7 @@ import pytorch_lightning as pl
 import timm
 from torchmetrics.classification import BinaryAUROC, BinaryAccuracy, BinaryF1Score
 
-_VALID_MODES     = {"fundus", "oct", "fusion"}
+_VALID_MODES     = {"fundus", "oct", "fusion", "fusion_cross_attention"}
 _VALID_BACKBONES = {"resnet18", "resnet34", "efficientnet_b0"}
 
 
@@ -48,6 +48,55 @@ def _infer_dim(encoder: nn.Module, in_chans: int, image_size: int = 224) -> int:
         return encoder(dummy).shape[1]
 
 
+def _infer_feat_dim(encoder: nn.Module, in_chans: int, image_size: int = 224) -> int:
+    """Infer channel dim from forward_features() (pre-pool spatial features)."""
+    with torch.no_grad():
+        try:
+            device = next(encoder.parameters()).device
+        except StopIteration:
+            device = torch.device("cpu")
+        dummy = torch.zeros(1, in_chans, image_size, image_size, device=device)
+        feat = encoder.forward_features(dummy)
+        if feat.ndim == 4:   # (B, C, H, W)
+            return feat.shape[1]
+        if feat.ndim == 3:   # (B, N, C)
+            return feat.shape[2]
+        return feat.shape[-1]
+
+
+def _feat_to_tokens(feat: torch.Tensor) -> torch.Tensor:
+    """Convert feature tensor to (B, N, C) token sequence."""
+    if feat.ndim == 4:                              # (B, C, H, W)
+        B, C, H, W = feat.shape
+        return feat.flatten(2).transpose(1, 2)      # (B, H*W, C)
+    if feat.ndim == 2:                              # (B, C)
+        return feat.unsqueeze(1)                    # (B, 1, C)
+    return feat                                     # already (B, N, C)
+
+
+class CrossAttentionFusion(nn.Module):
+    """Single cross-attention block: Q from fundus, K/V from OCT."""
+
+    def __init__(self, embed_dim: int, num_heads: int = 4, dropout: float = 0.0) -> None:
+        super().__init__()
+        if embed_dim % num_heads != 0:
+            num_heads = 1
+        self.attn = nn.MultiheadAttention(
+            embed_dim=embed_dim, num_heads=num_heads,
+            dropout=dropout, batch_first=True,
+        )
+        self.norm = nn.LayerNorm(embed_dim)
+
+    def forward(self, q_tokens: torch.Tensor, kv_tokens: torch.Tensor) -> torch.Tensor:
+        """
+        q_tokens  : (B, N_q,  C)
+        kv_tokens : (B, N_kv, C)
+        returns   : (B, N_q,  C)
+        """
+        attn_out, _ = self.attn(q_tokens, kv_tokens, kv_tokens)
+        return self.norm(q_tokens + attn_out)
+
+
 class MultimodalClassifier(pl.LightningModule):
     def __init__(
         self,
@@ -58,6 +107,8 @@ class MultimodalClassifier(pl.LightningModule):
         backbone: str = "resnet18",
         pretrained: bool = True,
         pos_weight: list[float] | None = None,
+        attn_heads: int = 4,
+        attn_dropout: float = 0.0,
     ) -> None:
         super().__init__()
         if mode not in _VALID_MODES:
@@ -68,17 +119,18 @@ class MultimodalClassifier(pl.LightningModule):
         self.mode = mode
 
         # Build encoders only for needed branches
-        if mode in {"fundus", "fusion"}:
+        if mode in {"fundus", "fusion", "fusion_cross_attention"}:
             self.fundus_encoder = _make_encoder(backbone, in_chans=3, pretrained=pretrained)
             fundus_dim = _infer_dim(self.fundus_encoder, in_chans=3)
             self.fundus_head = nn.Linear(fundus_dim, 2)
         else:
             fundus_dim = 0
 
-        if mode in {"oct", "fusion"}:
+        if mode in {"oct", "fusion", "fusion_cross_attention"}:
             self.oct_encoder = _make_encoder(backbone, in_chans=1, pretrained=pretrained)
             oct_dim = _infer_dim(self.oct_encoder, in_chans=1)
-            self.oct_head = nn.Linear(oct_dim, 2)
+            if mode in {"oct", "fusion"}:
+                self.oct_head = nn.Linear(oct_dim, 2)
         else:
             oct_dim = 0
 
@@ -89,6 +141,16 @@ class MultimodalClassifier(pl.LightningModule):
                 nn.ReLU(),
                 nn.Dropout(dropout),
                 nn.Linear(fused_dim // 2, 2),
+            )
+
+        if mode == "fusion_cross_attention":
+            f_feat_dim = _infer_feat_dim(self.fundus_encoder, in_chans=3)
+            o_feat_dim = _infer_feat_dim(self.oct_encoder,    in_chans=1)
+            attn_dim   = f_feat_dim
+            self.f_attn_proj = nn.Identity() if f_feat_dim == attn_dim else nn.Linear(f_feat_dim, attn_dim)
+            self.o_attn_proj = nn.Identity() if o_feat_dim == attn_dim else nn.Linear(o_feat_dim, attn_dim)
+            self.cross_attn  = CrossAttentionFusion(
+                embed_dim=attn_dim, num_heads=attn_heads, dropout=attn_dropout,
             )
 
         if pos_weight is not None:
@@ -120,11 +182,21 @@ class MultimodalClassifier(pl.LightningModule):
                 raise KeyError("mode='oct' requires batch['oct'] but key is missing.")
             return self.oct_head(self.oct_encoder(batch["oct"]))
 
-        # fusion
         if "fundus" not in batch:
-            raise KeyError("mode='fusion' requires batch['fundus'] but key is missing.")
+            raise KeyError(f"mode='{self.mode}' requires batch['fundus'] but key is missing.")
         if "oct" not in batch:
-            raise KeyError("mode='fusion' requires batch['oct'] but key is missing.")
+            raise KeyError(f"mode='{self.mode}' requires batch['oct'] but key is missing.")
+
+        if self.mode == "fusion_cross_attention":
+            f_feat = self.fundus_encoder.forward_features(batch["fundus"])
+            o_feat = self.oct_encoder.forward_features(batch["oct"])
+            q  = self.f_attn_proj(_feat_to_tokens(f_feat))  # (B, N_q,  attn_dim)
+            kv = self.o_attn_proj(_feat_to_tokens(o_feat))  # (B, N_kv, attn_dim)
+            fused  = self.cross_attn(q, kv)                 # (B, N_q,  attn_dim)
+            pooled = fused.mean(dim=1)                      # (B, attn_dim)
+            return self.fundus_head(pooled)
+
+        # fusion (concat)
         f_feat = self.fundus_encoder(batch["fundus"])
         o_feat = self.oct_encoder(batch["oct"])
         return self.fusion_head(torch.cat([f_feat, o_feat], dim=1))
