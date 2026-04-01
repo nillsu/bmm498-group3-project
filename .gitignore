@@ -208,7 +208,6 @@ __marimo__/
 # ===== ML PROJECT EXCLUDES =====
 
 # datasets
-data/
 datasets/
 dataset/
 images/
@@ -220,7 +219,6 @@ runs/
 
 # checkpoints
 checkpoints/
-models/
 weights/
 
 # logs
