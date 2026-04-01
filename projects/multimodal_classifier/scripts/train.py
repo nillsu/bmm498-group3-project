@@ -51,13 +51,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--train_csv",    default=None)
     p.add_argument("--val_csv",      default=None)
     p.add_argument("--test_csv",     default=None)
-    p.add_argument("--mode",         default="fusion", choices=["fundus", "oct", "fusion"])
+    p.add_argument("--mode",         default="fusion",
+                   choices=["fundus", "oct", "fusion",
+                            "fusion_cross_attention", "fusion_bi_cross_attention"])
     p.add_argument("--image_size",   type=int,   default=224)
     p.add_argument("--batch_size",   type=int,   default=32)
     p.add_argument("--num_workers",  type=int,   default=4)
     p.add_argument("--epochs",       type=int,   default=10)
-    p.add_argument("--lr",           type=float, default=1e-3)
-    p.add_argument("--weight_decay", type=float, default=0.0)
+    p.add_argument("--lr",           type=float, default=3e-4)
+    p.add_argument("--weight_decay", type=float, default=1e-2)
     p.add_argument("--dropout",      type=float, default=0.2)
     p.add_argument("--seed",         type=int,   default=42)
     p.add_argument("--output_dir",   required=True)
@@ -80,6 +82,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--monitor",      default="val_dr_auc",
                    choices=["val_dr_auc", "val_dme_auc", "val/loss"],
                    help="Metric to monitor for checkpointing and early stopping.")
+    p.add_argument("--pos_weight",   type=float, nargs=2, default=None,
+                   metavar=("W_DR", "W_DME"),
+                   help="pos_weight for BCEWithLogitsLoss: [DR_pos, DME]. "
+                        "Compute with compute_pos_weight.py. Example: --pos_weight 3.2 5.1")
     p.add_argument("--print_env",    action="store_true",
                    help="Print Python/CUDA environment info at startup.")
     return p.parse_args()
@@ -136,6 +142,7 @@ def main() -> None:
         dropout=args.dropout,
         backbone=args.backbone,
         pretrained=args.pretrained,
+        pos_weight=args.pos_weight,
     )
 
     # Pre-flight: setup data and print one batch's shapes to catch path issues early

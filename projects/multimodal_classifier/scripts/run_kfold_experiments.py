@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 
-MODES = ["fundus", "oct", "fusion"]
+MODES = ["fundus", "oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"]
 _ABLATION_SCRIPT = Path(__file__).resolve().parent / "run_ablation.py"
 
 
@@ -38,6 +38,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed",        type=int, default=42)
     p.add_argument("--folds",         default="all",
                    help="'all' or comma-separated fold indices, e.g. '0,2,4'.")
+    p.add_argument("--pos_weight",    type=float, nargs=2, default=None,
+                   metavar=("W_DR", "W_DME"),
+                   help="Passed through to run_ablation.py and train.py. "
+                        "pos_weight for BCEWithLogitsLoss: [DR_pos, DME]. "
+                        "Example: --pos_weight 3.2 5.1")
     p.add_argument("--skip_existing", action="store_true",
                    help="Passed through to run_ablation.py.")
     p.add_argument("--dry_run",       action="store_true",
@@ -84,6 +89,8 @@ def _build_ablation_cmd(args: argparse.Namespace, fold_dir: Path, output_dir: Pa
         "--num_workers", str(args.num_workers),
         "--seed",        str(args.seed),
     ]
+    if args.pos_weight is not None:
+        cmd += ["--pos_weight", str(args.pos_weight[0]), str(args.pos_weight[1])]
     if args.skip_existing:
         cmd.append("--skip_existing")
     if args.dry_run:

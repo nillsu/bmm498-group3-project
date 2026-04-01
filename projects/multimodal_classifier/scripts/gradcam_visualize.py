@@ -109,7 +109,9 @@ def main() -> None:
     parser.add_argument("--ckpt_path",  required=True)
     parser.add_argument("--csv_path",   required=True)
     parser.add_argument("--data_root",  required=True)
-    parser.add_argument("--mode",       required=True, choices=["fundus", "oct", "fusion"])
+    parser.add_argument("--mode",       required=True,
+                        choices=["fundus", "oct", "fusion",
+                                 "fusion_cross_attention", "fusion_bi_cross_attention"])
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--num_images", type=int, default=16)
@@ -130,13 +132,15 @@ def main() -> None:
         df = df[df["split"] == "val"].reset_index(drop=True)
     df = df.head(args.num_images).reset_index(drop=True)
 
+    _FUNDUS_MODES = ("fundus", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention")
+    _OCT_MODES    = ("oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention")
     tf_fundus = (
         get_fundus_transforms(train=False, image_size=224)
-        if args.mode in ("fundus", "fusion") else None
+        if args.mode in _FUNDUS_MODES else None
     )
     tf_oct = (
         get_oct_transforms(train=False, image_size=224)
-        if args.mode in ("oct", "fusion") else None
+        if args.mode in _OCT_MODES else None
     )
 
     dataset = MultimodalEyeDataset(

@@ -56,7 +56,7 @@ class MultimodalDataModule(pl.LightningDataModule):
         test_csv: str | Path | None = None,
     ) -> None:
         super().__init__()
-        _VALID_MODES = {"fundus", "oct", "fusion"}
+        _VALID_MODES = {"fundus", "oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}
         if mode not in _VALID_MODES:
             raise ValueError(
                 f"mode={mode!r} is not valid. Expected one of {_VALID_MODES}."

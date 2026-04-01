@@ -42,7 +42,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--val_csv",    default=None)
     p.add_argument("--test_csv",   default=None)
     p.add_argument("--checkpoint", required=True)
-    p.add_argument("--mode",       required=True, choices=["fundus", "oct", "fusion"])
+    p.add_argument("--mode",       required=True,
+                   choices=["fundus", "oct", "fusion",
+                            "fusion_cross_attention", "fusion_bi_cross_attention"])
     p.add_argument("--output_csv", required=True)
     p.add_argument("--batch_size",  type=int, default=32)
     p.add_argument("--num_workers", type=int, default=4)

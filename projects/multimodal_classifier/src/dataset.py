@@ -28,7 +28,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-_VALID_MODES = {"fundus", "oct", "fusion"}
+_VALID_MODES = {"fundus", "oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}
 
 
 class MultimodalEyeDataset(Dataset):
@@ -52,9 +52,9 @@ class MultimodalEyeDataset(Dataset):
                 "  from google.colab import drive; drive.mount('/content/drive')"
             )
 
-        if mode in ("fundus", "fusion") and transform_fundus is None:
+        if mode in ("fundus", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention") and transform_fundus is None:
             raise ValueError(f"transform_fundus is required for mode='{mode}'")
-        if mode in ("oct", "fusion") and transform_oct is None:
+        if mode in ("oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention") and transform_oct is None:
             raise ValueError(f"transform_oct is required for mode='{mode}'")
 
         self.df = df.reset_index(drop=True)
@@ -72,10 +72,10 @@ class MultimodalEyeDataset(Dataset):
         missing_oct:    list[str] = []
         for _, row in self.df.iterrows():
             sid = str(row["sample_id"])
-            if self.mode in ("fundus", "fusion"):
+            if self.mode in ("fundus", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"):
                 if not (self.data_root / str(row["fundus_rel"])).exists():
                     missing_fundus.append(sid)
-            if self.mode in ("oct", "fusion"):
+            if self.mode in ("oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"):
                 if not (self.data_root / str(row["oct_rel"])).exists():
                     missing_oct.append(sid)
         total = len(self.df)
@@ -110,7 +110,7 @@ class MultimodalEyeDataset(Dataset):
         out: dict = {"sample_id": sample_id, "labels": labels}
 
         # --- fundus ----------------------------------------------------------
-        if self.mode in ("fundus", "fusion"):
+        if self.mode in ("fundus", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"):
             fundus_path = self.data_root / str(row["fundus_rel"])
             if not fundus_path.exists():
                 raise FileNotFoundError(
@@ -124,7 +124,7 @@ class MultimodalEyeDataset(Dataset):
             out["fundus"] = self.transform_fundus(img)
 
         # --- OCT -------------------------------------------------------------
-        if self.mode in ("oct", "fusion"):
+        if self.mode in ("oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"):
             oct_path = self.data_root / str(row["oct_rel"])
             if not oct_path.exists():
                 raise FileNotFoundError(

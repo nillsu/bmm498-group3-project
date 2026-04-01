@@ -175,7 +175,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ckpt_path",       required=True)
     p.add_argument("--csv_path",        default=None)
     p.add_argument("--data_root",       required=True)
-    p.add_argument("--mode",            required=True, choices=["fundus", "oct", "fusion"])
+    p.add_argument("--mode",            required=True,
+                   choices=["fundus", "oct", "fusion",
+                            "fusion_cross_attention", "fusion_bi_cross_attention"])
     p.add_argument("--batch_size",      type=int, default=32)
     p.add_argument("--output_dir",      required=True)
     p.add_argument("--bootstrap_iters", type=int,   default=1000)
