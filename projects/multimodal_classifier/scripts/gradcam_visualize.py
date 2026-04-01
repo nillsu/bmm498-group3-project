@@ -25,11 +25,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dataset import MultimodalEyeDataset
-from model import MultimodalClassifier
-from transforms import get_fundus_transforms, get_oct_transforms
+from src.dataset import MultimodalEyeDataset
+from src.model import MultimodalClassifier
+from src.transforms import get_fundus_transforms, get_oct_transforms
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +183,7 @@ def main() -> None:
         gt_labels = batch["labels"][0]  # (2,)
 
         # Display image: use fundus for fundus/fusion, oct otherwise
-        if args.mode in ("fundus", "fusion"):
+        if args.mode in ("fundus", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"):
             display_tensor = batch["fundus"][0]
         else:
             display_tensor = batch["oct"][0]

@@ -1,7 +1,7 @@
 """
 MultimodalClassifier — PyTorch Lightning module for fundus + OCT classification.
 
-Supports four modes: fundus, oct, fusion, fusion_cross_attention.
+Supports five modes: fundus, oct, fusion, fusion_cross_attention, fusion_bi_cross_attention.
 Mid-level fusion: two ResNet-18 encoders, per-branch heads plus a fusion head.
 """
 
@@ -74,6 +74,15 @@ def _feat_to_tokens(feat: torch.Tensor) -> torch.Tensor:
     return feat                                     # already (B, N, C)
 
 
+def _pool_features(feat: torch.Tensor) -> torch.Tensor:
+    """Global-average-pool a spatial/sequence feature tensor to (B, C)."""
+    if feat.ndim == 4:      # (B, C, H, W) — CNN spatial features
+        return feat.mean(dim=[2, 3])
+    if feat.ndim == 3:      # (B, N, C) — transformer tokens
+        return feat.mean(dim=1)
+    return feat             # already (B, C)
+
+
 class CrossAttentionFusion(nn.Module):
     """Single cross-attention block: Q from fundus, K/V from OCT."""
 
@@ -109,6 +118,9 @@ class MultimodalClassifier(pl.LightningModule):
         pos_weight: list[float] | None = None,
         attn_heads: int = 4,
         attn_dropout: float = 0.0,
+        alpha_fundus: float = 0.3,
+        alpha_oct: float = 0.3,
+        model_variant: str = "auxloss",
     ) -> None:
         super().__init__()
         if mode not in _VALID_MODES:
@@ -129,7 +141,7 @@ class MultimodalClassifier(pl.LightningModule):
         if mode in {"oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}:
             self.oct_encoder = _make_encoder(backbone, in_chans=1, pretrained=pretrained)
             oct_dim = _infer_dim(self.oct_encoder, in_chans=1)
-            if mode in {"oct", "fusion"}:
+            if mode in {"oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}:
                 self.oct_head = nn.Linear(oct_dim, 2)
         else:
             oct_dim = 0
@@ -226,6 +238,65 @@ class MultimodalClassifier(pl.LightningModule):
         return self.fusion_head(torch.cat([f_feat, o_feat], dim=1))
 
     # ------------------------------------------------------------------
+    def _forward_with_aux(
+        self, batch: dict
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        """Return (main_logits, fundus_aux_logits, oct_aux_logits).
+
+        Unimodal modes return (logits, None, None).
+        Multimodal modes return three (B, 2) tensors:
+          - main_logits   : from the fused representation (used for metrics / prediction)
+          - fundus_aux    : from pre-fusion fundus pooled features → fundus_head
+          - oct_aux       : from pre-fusion oct pooled features    → oct_head
+
+        When model_variant="baseline" auxiliary logits are suppressed for all
+        modes, making training identical to the pre-auxloss behaviour.
+
+        Note: in cross-attention modes fundus_head is shared between the main path
+        (post-fusion pooled) and the auxiliary fundus path (pre-fusion pooled).
+        forward() is left unchanged so all external callers receive main logits only.
+        """
+        if self.mode in {"fundus", "oct"} or self.hparams.model_variant == "baseline":
+            return self(batch), None, None
+
+        fundus_img = batch["fundus"]
+        oct_img    = batch["oct"]
+
+        if self.mode == "fusion":
+            f_feat = self.fundus_encoder(fundus_img)
+            o_feat = self.oct_encoder(oct_img)
+            main   = self.fusion_head(torch.cat([f_feat, o_feat], dim=1))
+            f_aux  = self.fundus_head(f_feat)
+            o_aux  = self.oct_head(o_feat)
+
+        elif self.mode == "fusion_cross_attention":
+            f_feat   = self.fundus_encoder.forward_features(fundus_img)
+            o_feat   = self.oct_encoder.forward_features(oct_img)
+            f_pooled = _pool_features(f_feat)
+            o_pooled = _pool_features(o_feat)
+            q      = self.f_attn_proj(_feat_to_tokens(f_feat))
+            kv     = self.o_attn_proj(_feat_to_tokens(o_feat))
+            fused  = self.cross_attn(q, kv).mean(dim=1)
+            main   = self.fundus_head(fused)
+            f_aux  = self.fundus_head(f_pooled)   # shared head, pre-fusion features
+            o_aux  = self.oct_head(o_pooled)
+
+        else:  # fusion_bi_cross_attention
+            f_feat   = self.fundus_encoder.forward_features(fundus_img)
+            o_feat   = self.oct_encoder.forward_features(oct_img)
+            f_pooled = _pool_features(f_feat)
+            o_pooled = _pool_features(o_feat)
+            f_tok  = self.bi_f_proj(_feat_to_tokens(f_feat))
+            o_tok  = self.bi_o_proj(_feat_to_tokens(o_feat))
+            f_vec  = self.cross_attn_f2o(f_tok, o_tok).mean(dim=1)
+            o_vec  = self.cross_attn_o2f(o_tok, f_tok).mean(dim=1)
+            main   = self.fundus_head(0.5 * (f_vec + o_vec))
+            f_aux  = self.fundus_head(f_pooled)   # shared head, pre-fusion features
+            o_aux  = self.oct_head(o_pooled)
+
+        return main, f_aux, o_aux
+
+    # ------------------------------------------------------------------
     def _shared_step(self, batch: dict, stage: str) -> torch.Tensor:
         labels = batch["labels"].float()
         if labels.shape == (2,):
@@ -234,12 +305,29 @@ class MultimodalClassifier(pl.LightningModule):
             raise ValueError(
                 f"labels must have shape (B, 2) but got {tuple(labels.shape)}."
             )
-        logits = self(batch)
-        loss = self.loss_fn(logits, labels)
-        self.log(f"{stage}/loss", loss, prog_bar=True, on_step=(stage == "train"),
-                 on_epoch=True, sync_dist=True)
+        main_logits, fundus_aux, oct_aux = self._forward_with_aux(batch)
+        loss_main = self.loss_fn(main_logits, labels)
 
-        probs    = torch.sigmoid(logits)
+        if fundus_aux is not None:
+            loss_f = self.loss_fn(fundus_aux, labels)
+            loss_o = self.loss_fn(oct_aux,    labels)
+            loss   = (loss_main
+                      + self.hparams.alpha_fundus * loss_f
+                      + self.hparams.alpha_oct    * loss_o)
+            self.log(f"{stage}/loss",            loss,      prog_bar=True,
+                     on_step=(stage == "train"), on_epoch=True, sync_dist=True)
+            self.log(f"{stage}/loss_main",       loss_main, prog_bar=False,
+                     on_step=False, on_epoch=True, sync_dist=True)
+            self.log(f"{stage}/loss_fundus_aux", loss_f,    prog_bar=False,
+                     on_step=False, on_epoch=True, sync_dist=True)
+            self.log(f"{stage}/loss_oct_aux",    loss_o,    prog_bar=False,
+                     on_step=False, on_epoch=True, sync_dist=True)
+        else:
+            loss = loss_main
+            self.log(f"{stage}/loss", loss, prog_bar=True, on_step=(stage == "train"),
+                     on_epoch=True, sync_dist=True)
+
+        probs    = torch.sigmoid(main_logits)
         prob_dr  = probs[:, 0]
         prob_dme = probs[:, 1]
         lbl_dr   = labels[:, 0].long()
@@ -303,3 +391,45 @@ class MultimodalClassifier(pl.LightningModule):
             optimizer, T_max=self.trainer.max_epochs
         )
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
+
+    # ------------------------------------------------------------------
+    @classmethod
+    def load_checkpoint_safe(
+        cls,
+        ckpt_path: str,
+        **kwargs,
+    ) -> "MultimodalClassifier":
+        """Load a checkpoint; fall back to strict=False on key mismatch.
+
+        Tries strict=True first.  If a RuntimeError is raised (missing or
+        unexpected state-dict keys), retries with strict=False and prints a
+        clear diff so callers know exactly what changed.  Never silently
+        ignores mismatches.
+
+        Typical use:
+            model = MultimodalClassifier.load_checkpoint_safe(
+                "path/best.ckpt", mode="fusion"
+            )
+        """
+        try:
+            model = cls.load_from_checkpoint(ckpt_path, **kwargs)
+            print(f"Checkpoint loaded (strict=True): {ckpt_path}")
+            return model
+        except RuntimeError as exc:
+            print(f"Strict load failed: {exc}")
+            print("Retrying with strict=False ...")
+
+            raw = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+            ckpt_keys  = set(raw.get("state_dict", {}).keys())
+            model      = cls.load_from_checkpoint(ckpt_path, strict=False, **kwargs)
+            model_keys = set(model.state_dict().keys())
+
+            missing    = sorted(model_keys - ckpt_keys)
+            unexpected = sorted(ckpt_keys  - model_keys)
+            if missing:
+                print(f"  Missing keys (new params, random init) : {missing}")
+            if unexpected:
+                print(f"  Unexpected keys (old params, ignored)  : {unexpected}")
+            if not missing and not unexpected:
+                print("  No key diff detected.")
+            return model

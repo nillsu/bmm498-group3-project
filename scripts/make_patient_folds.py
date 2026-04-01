@@ -15,6 +15,15 @@ OUT_DIR = "splits"
 def patient_set(df):
     return set(df["patient_id"].astype(str).unique().tolist())
 
+
+def _add_required_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """Add columns required by MultimodalEyeDataset / MultimodalDataModule."""
+    df = df.copy()
+    df["sample_id"]  = df["patient_id"].astype(str) + "_" + df["eye"].astype(str)
+    df["fundus_rel"] = df["fundus_preprocessed"]
+    df["oct_rel"]    = df["oct_preprocessed_v2"]
+    return df
+
 def main():
     # --- Dosyaları oku
     df_train = pd.read_csv(TRAIN_CSV)
@@ -48,7 +57,7 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
 
     # sabit test
-    df_test.to_csv(os.path.join(OUT_DIR, "test.csv"), index=False)
+    _add_required_cols(df_test).to_csv(os.path.join(OUT_DIR, "test.csv"), index=False)
 
     for fold, (tr_idx, va_idx) in enumerate(sgkf.split(df_pool, y, groups)):
         fold_dir = os.path.join(OUT_DIR, f"fold_{fold}")
@@ -64,8 +73,8 @@ def main():
         if overlap:
             raise RuntimeError(f"DATA LEAKAGE: fold {fold} train/val patients overlap: {len(overlap)}")
 
-        df_tr.to_csv(os.path.join(fold_dir, "train.csv"), index=False)
-        df_va.to_csv(os.path.join(fold_dir, "val.csv"), index=False)
+        _add_required_cols(df_tr).to_csv(os.path.join(fold_dir, "train.csv"), index=False)
+        _add_required_cols(df_va).to_csv(os.path.join(fold_dir, "val.csv"), index=False)
 
         print(f"Fold {fold} OK | train rows={len(df_tr)} val rows={len(df_va)} "
               f"| train patients={len(tr_pat)} val patients={len(va_pat)}")

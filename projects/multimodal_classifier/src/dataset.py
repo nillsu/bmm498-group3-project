@@ -36,7 +36,7 @@ class MultimodalEyeDataset(Dataset):
         self,
         df: pd.DataFrame,
         data_root: str | Path,
-        mode: Literal["fundus", "oct", "fusion"],
+        mode: Literal["fundus", "oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"],
         transform_fundus: Optional[Callable] = None,
         transform_oct: Optional[Callable] = None,
         verify_files: bool = False,

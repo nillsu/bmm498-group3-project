@@ -86,6 +86,13 @@ def parse_args() -> argparse.Namespace:
                    metavar=("W_DR", "W_DME"),
                    help="pos_weight for BCEWithLogitsLoss: [DR_pos, DME]. "
                         "Compute with compute_pos_weight.py. Example: --pos_weight 3.2 5.1")
+    p.add_argument("--alpha_fundus", type=float, default=0.3,
+                   help="Weight for auxiliary fundus loss in multimodal modes (default: 0.3).")
+    p.add_argument("--alpha_oct",    type=float, default=0.3,
+                   help="Weight for auxiliary OCT loss in multimodal modes (default: 0.3).")
+    p.add_argument("--model_variant", default="auxloss", choices=["baseline", "auxloss"],
+                   help="'auxloss': auxiliary unimodal losses active (default). "
+                        "'baseline': standard single-loss training (no aux heads).")
     p.add_argument("--print_env",    action="store_true",
                    help="Print Python/CUDA environment info at startup.")
     return p.parse_args()
@@ -102,6 +109,7 @@ def main() -> None:
     if torch.cuda.is_available():
         print(f"GPU     : {torch.cuda.get_device_name(0)}")
     print(f"Mode    : {args.mode}")
+    print(f"Variant : {args.model_variant}")
     print(f"Batch   : {args.batch_size}")
 
     if args.precision == "16-mixed":
@@ -143,6 +151,9 @@ def main() -> None:
         backbone=args.backbone,
         pretrained=args.pretrained,
         pos_weight=args.pos_weight,
+        alpha_fundus=args.alpha_fundus,
+        alpha_oct=args.alpha_oct,
+        model_variant=args.model_variant,
     )
 
     # Pre-flight: setup data and print one batch's shapes to catch path issues early
@@ -181,7 +192,7 @@ def main() -> None:
         accelerator="auto",
         devices="auto",
         precision=args.precision,
-        deterministic=True,
+        deterministic=args.deterministic,
         log_every_n_steps=args.log_every_n_steps,
         gradient_clip_val=args.gradient_clip_val,
         accumulate_grad_batches=args.accumulate_grad_batches,

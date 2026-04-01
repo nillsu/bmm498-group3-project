@@ -43,6 +43,9 @@ def parse_args() -> argparse.Namespace:
                    metavar=("W_DR", "W_DME"),
                    help="pos_weight for BCEWithLogitsLoss forwarded to train.py: [DR_pos, DME]. "
                         "Compute with compute_pos_weight.py. Example: --pos_weight 3.2 5.1")
+    p.add_argument("--model_variant",  default="auxloss", choices=["baseline", "auxloss"],
+                   help="'auxloss': auxiliary losses active (default). "
+                        "'baseline': standard single-loss training.")
     p.add_argument("--skip_existing", action="store_true",
                    help="Skip modes that already have a best-*.ckpt in checkpoints/.")
     p.add_argument("--dry_run",       action="store_true",
@@ -70,6 +73,7 @@ def _build_cmd(args: argparse.Namespace, mode: str, run_dir: Path) -> list[str]:
         cmd += ["--csv_path", args.csv_path]
     if args.pos_weight is not None:
         cmd += ["--pos_weight", str(args.pos_weight[0]), str(args.pos_weight[1])]
+    cmd += ["--model_variant", args.model_variant]
     return cmd
 
 

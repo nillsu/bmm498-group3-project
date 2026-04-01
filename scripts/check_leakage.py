@@ -28,7 +28,7 @@ for k in range(5):
 
     print(f"fold_{k}: train_pat={len(tr_pat)} val_pat={len(va_pat)} test_pat={len(test_pat)}")
 
-print("\nRESULT:", "NO PATIENT LEAKAGE ✅" if ok else "LEAKAGE FOUND ❌")
+print("\nRESULT:", "NO PATIENT LEAKAGE [OK]" if ok else "LEAKAGE FOUND [FAIL]")
 
 # Optional: check val sets overlap across folds (ideally 0 for strict group-kfold)
 val_sets = []

@@ -36,6 +36,28 @@ def _worker_init_fn(worker_id: int) -> None:
     random.seed(seed + worker_id)
     np.random.seed(seed + worker_id)
 
+
+def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Map legacy column names to the canonical names expected by MultimodalEyeDataset.
+
+    Legacy → canonical mappings applied only when the canonical name is absent:
+        patient_id + eye    → sample_id
+        fundus_preprocessed → fundus_rel
+        oct_preprocessed_v2 → oct_rel
+    """
+    if df.empty:
+        return df
+    df = df.copy()
+    if "sample_id" not in df.columns:
+        if "patient_id" in df.columns and "eye" in df.columns:
+            df["sample_id"] = df["patient_id"].astype(str) + "_" + df["eye"].astype(str)
+    if "fundus_rel" not in df.columns and "fundus_preprocessed" in df.columns:
+        df["fundus_rel"] = df["fundus_preprocessed"]
+    if "oct_rel" not in df.columns and "oct_preprocessed_v2" in df.columns:
+        df["oct_rel"] = df["oct_preprocessed_v2"]
+    return df
+
+
 from .dataset import MultimodalEyeDataset
 from .transforms import get_fundus_transforms, get_oct_transforms
 
@@ -103,10 +125,10 @@ class MultimodalDataModule(pl.LightningDataModule):
                 )
 
         if self._use_fold_csvs:
-            df_train = pd.read_csv(self.train_csv)
-            df_val   = pd.read_csv(self.val_csv)
+            df_train = _normalize_columns(pd.read_csv(self.train_csv))
+            df_val   = _normalize_columns(pd.read_csv(self.val_csv))
             df_test  = (
-                pd.read_csv(self.test_csv)
+                _normalize_columns(pd.read_csv(self.test_csv))
                 if self.test_csv is not None and self.test_csv.exists()
                 else pd.DataFrame()
             )
@@ -115,7 +137,7 @@ class MultimodalDataModule(pl.LightningDataModule):
         else:
             # Read CSV exactly once; re-entrant if called multiple times
             if self._df is None:
-                self._df = pd.read_csv(self.csv_path)
+                self._df = _normalize_columns(pd.read_csv(self.csv_path))
             _check_cols(self._df, {"split"}, "csv_path")
             df = self._df
             df_train = df[df["split"] == "train"].reset_index(drop=True)

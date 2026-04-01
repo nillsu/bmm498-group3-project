@@ -46,7 +46,10 @@ def _auc(y_true: np.ndarray, y_prob: np.ndarray) -> float:
     fpr = fp / n_neg
     tpr = np.concatenate([[0.0], tpr])
     fpr = np.concatenate([[0.0], fpr])
-    return float(np.trapz(tpr, fpr))
+    try:
+        return float(np.trapezoid(tpr, fpr))   # NumPy >= 2.0
+    except AttributeError:
+        return float(np.trapz(tpr, fpr))       # NumPy < 2.0
 
 
 def _accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
