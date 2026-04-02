@@ -17,7 +17,11 @@ def patient_set(df):
 
 
 def _add_required_cols(df: pd.DataFrame) -> pd.DataFrame:
-    """Add columns required by MultimodalEyeDataset / MultimodalDataModule."""
+    """Add columns required by MultimodalEyeDataset / MultimodalDataModule.
+
+    fundus_rel  <- fundus_preprocessed   (values: {split}/fundus/{file})
+    oct_rel     <- oct_preprocessed_v2   (values: {split}/oct_real/{file} — real OCT)
+    """
     df = df.copy()
     df["sample_id"]  = df["patient_id"].astype(str) + "_" + df["eye"].astype(str)
     df["fundus_rel"] = df["fundus_preprocessed"]

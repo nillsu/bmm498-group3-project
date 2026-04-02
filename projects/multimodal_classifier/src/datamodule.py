@@ -42,8 +42,12 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     Legacy → canonical mappings applied only when the canonical name is absent:
         patient_id + eye    → sample_id
-        fundus_preprocessed → fundus_rel
-        oct_preprocessed_v2 → oct_rel
+        fundus_preprocessed → fundus_rel   (values: {split}/fundus/{file})
+        oct_preprocessed_v2 → oct_rel      (values: {split}/oct_real/{file}  — real OCT)
+
+    Note: oct_preprocessed (values: {split}/oct/{file}) is an older v1 preprocessing
+    of the real OCT that is no longer used in training and is intentionally not mapped.
+    batch["oct"] always refers to real OCT (oct_rel); pseudo-OCT is not yet wired in.
     """
     if df.empty:
         return df
