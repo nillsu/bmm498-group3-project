@@ -92,7 +92,7 @@ if __name__ == "__main__":
     # EARLY STOPPING PARAMS --> early stopping için başlangıç ayarları yapılıyor
     # =========================
     best_val_loss = float("inf") # Başlangıçta en iyi val loss sonsuz olsun diyorsun. Yani ilk gelen gerçek val loss bundan küçük olacağı için “en iyi” kabul edilir.
-    patience = 5 # validation loss kötüleşince kaç epoch daha sabredecek?
+    patience = 10 # validation loss kötüleşince kaç epoch daha sabredecek?
     counter = 0 # şu ana kadar kaç kez üst üste kötüleştiğini sayacak 
 
     # TRAIN LOOP
