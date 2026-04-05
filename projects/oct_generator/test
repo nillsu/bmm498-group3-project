@@ -1,0 +1,35 @@
+# test.py
+
+import os
+from options.base_options import BaseOptions
+from data.aligned_dataset import AlignedDataset
+from torch.utils.data import DataLoader
+from models import create_model
+
+opt = BaseOptions().parse()
+opt.phase = 'test'
+opt.isTrain = False
+
+dataset = AlignedDataset(opt)
+dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
+
+model = create_model(opt)
+model.setup(opt)
+model.eval()
+
+save_dir = os.path.join(opt.results_dir, opt.name, f"{opt.phase}_{opt.epoch}", "images")
+os.makedirs(save_dir, exist_ok=True)
+
+for i, data in enumerate(dataloader):
+    model.set_input(data)
+    model.forward()
+
+    fake_B = model.fake_B.detach().cpu()
+    real_A = model.real_A.detach().cpu()
+    real_B = model.real_B.detach().cpu()
+
+    import torchvision.utils as vutils
+
+    vutils.save_image(fake_B, os.path.join(save_dir, f"{i}_fake_B.png"), normalize=True)
+    vutils.save_image(real_A, os.path.join(save_dir, f"{i}_real_A.png"), normalize=True)
+    vutils.save_image(real_B, os.path.join(save_dir, f"{i}_real_B.png"), normalize=True)
