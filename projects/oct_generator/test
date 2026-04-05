@@ -1,38 +1,63 @@
 # test.py
 
 import os
+import torch
+import torchvision.utils as vutils
+from torch.utils.data import DataLoader
+
 from options.base_options import BaseOptions
 from data.aligned_dataset import AlignedDataset
-from torch.utils.data import DataLoader
 from models import create_model
 
-opt = BaseOptions().parse()
-opt.phase = 'test'
-opt.isTrain = False
+
+def main():
+    opt = BaseOptions().parse()
+
+    # Test ayarları
+    opt.phase = "test"
+    opt.isTrain = False
+    opt.serial_batches = True      # shuffle olmasın
+    opt.no_flip = True             # augmentation olmasın
+    opt.batch_size = 1             # testte 1 kullan
+    opt.num_threads = 0            # daha stabil
+    opt.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Dataset
+    dataset = AlignedDataset(opt)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=opt.batch_size,
+        shuffle=False,
+        num_workers=opt.num_threads
+    )
+
+    print(f"Test sample count: {len(dataset)}")
+
+    # Model
+    model = create_model(opt)
+    model.setup(opt)
+    model.eval()
+
+    # Kayıt klasörü
+    save_dir = os.path.join("results", opt.name, f"{opt.phase}_{opt.epoch}", "images")
+    os.makedirs(save_dir, exist_ok=True)
+    print(f"Saving results to: {save_dir}")
+
+    with torch.no_grad():
+        for i, data in enumerate(dataloader):
+            model.set_input(data)
+            model.forward()
+
+            real_A = model.real_A.detach().cpu()
+            fake_B = model.fake_B.detach().cpu()
+            real_B = model.real_B.detach().cpu()
+
+            vutils.save_image(real_A, os.path.join(save_dir, f"{i:04d}_real_A.png"), normalize=True)
+            vutils.save_image(fake_B, os.path.join(save_dir, f"{i:04d}_fake_B.png"), normalize=True)
+            vutils.save_image(real_B, os.path.join(save_dir, f"{i:04d}_real_B.png"), normalize=True)
+
+    print("Test completed.")
 
 
-import torch
-opt.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-dataset = AlignedDataset(opt)
-dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
-
-model = create_model(opt)
-model.setup(opt)
-model.eval()
-
-save_dir = os.path.join("results", opt.name, f"{opt.phase}_{opt.epoch}", "images")
-os.makedirs(save_dir, exist_ok=True)
-
-for i, data in enumerate(dataloader):
-    model.set_input(data)
-    model.forward()
-
-    fake_B = model.fake_B.detach().cpu()
-    real_A = model.real_A.detach().cpu()
-    real_B = model.real_B.detach().cpu()
-
-    import torchvision.utils as vutils
-
-    vutils.save_image(fake_B, os.path.join(save_dir, f"{i}_fake_B.png"), normalize=True)
-    vutils.save_image(real_A, os.path.join(save_dir, f"{i}_real_A.png"), normalize=True)
-    vutils.save_image(real_B, os.path.join(save_dir, f"{i}_real_B.png"), normalize=True)
+if __name__ == "__main__":
+    main()
