@@ -39,22 +39,50 @@ def main():
     model.eval()
 
     # Kayıt klasörü
-    save_dir = os.path.join("/content/drive/MyDrive/results", opt.name, f"{opt.phase}_{opt.epoch}", "images")
+    save_dir = os.path.join(
+        "/content/drive/MyDrive/results",
+        opt.name,
+        f"{opt.phase}_{opt.epoch}",
+        "images"
+    )
     os.makedirs(save_dir, exist_ok=True)
     print(f"Saving results to: {save_dir}")
 
     with torch.no_grad():
         for i, data in enumerate(dataloader):
             model.set_input(data)
-            model.forward()
+            model.test()
 
             real_A = model.real_A.detach().cpu()
             fake_B = model.fake_B.detach().cpu()
             real_B = model.real_B.detach().cpu()
 
-            vutils.save_image(real_A, os.path.join(save_dir, f"{i:04d}_real_A.png"), normalize=True)
-            vutils.save_image(fake_B, os.path.join(save_dir, f"{i:04d}_fake_B.png"), normalize=True)
-            vutils.save_image(real_B, os.path.join(save_dir, f"{i:04d}_real_B.png"), normalize=True)
+            input_path = data["A_paths"][0]
+            base_name = os.path.splitext(os.path.basename(input_path))[0]
+
+            # örn: 1228_OD_000000_fundus -> 1228_OD_000000
+            if base_name.endswith("_fundus"):
+                sample_name = base_name[:-7]
+            else:
+                sample_name = base_name
+
+            vutils.save_image(
+                real_A,
+                os.path.join(save_dir, f"{sample_name}_real_A.png"),
+                normalize=True
+            )
+            vutils.save_image(
+                fake_B,
+                os.path.join(save_dir, f"{sample_name}_fake_B.png"),
+                normalize=True
+            )
+            vutils.save_image(
+                real_B,
+                os.path.join(save_dir, f"{sample_name}_real_B.png"),
+                normalize=True
+            )
+
+            print(f"Saved {sample_name}")
 
     print("Test completed.")
 
