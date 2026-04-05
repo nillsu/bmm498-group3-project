@@ -10,6 +10,9 @@ opt = BaseOptions().parse()
 opt.phase = 'test'
 opt.isTrain = False
 
+
+import torch
+opt.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dataset = AlignedDataset(opt)
 dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
 
