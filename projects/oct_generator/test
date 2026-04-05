@@ -39,7 +39,7 @@ def main():
     model.eval()
 
     # Kayıt klasörü
-    save_dir = os.path.join("results", opt.name, f"{opt.phase}_{opt.epoch}", "images")
+    save_dir = os.path.join("/content/drive/MyDrive/results", opt.name, f"{opt.phase}_{opt.epoch}", "images")
     os.makedirs(save_dir, exist_ok=True)
     print(f"Saving results to: {save_dir}")
 
