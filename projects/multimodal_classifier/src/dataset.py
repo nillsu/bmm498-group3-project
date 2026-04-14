@@ -8,14 +8,22 @@ The caller is responsible for:
 
 CSV columns expected in df:
     sample_id, split, fundus_rel, oct_rel, DR_pos, DME
+    oct_pseudo_rel   (required only for modes: pseudo_oct, fusion_pseudo)
 
 __getitem__ returns:
     {
         "sample_id": str,
         "labels":    FloatTensor (2,)   # [DR_pos, DME]
-        "fundus":    FloatTensor (3,H,W)  # present when mode in {"fundus", "fusion"}
-        "oct":       FloatTensor (1,H,W)  # present when mode in {"oct",    "fusion"}
+        "fundus":    FloatTensor (3,H,W)  # present when mode in {"fundus", "fusion*", "fusion_pseudo"}
+        "oct":       FloatTensor (1,H,W)  # present when mode in {"oct", "fusion*", "pseudo_oct", "fusion_pseudo"}
     }
+
+Pseudo-OCT modes
+────────────────
+  pseudo_oct      — loads pseudo-OCT only (oct_pseudo_rel column), stored in batch["oct"]
+  fusion_pseudo   — loads fundus (fundus_rel) + pseudo-OCT (oct_pseudo_rel)
+
+The batch key is "oct" in both pseudo modes so downstream model code is unchanged.
 """
 
 from __future__ import annotations
@@ -28,7 +36,22 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-_VALID_MODES = {"fundus", "oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}
+_VALID_MODES = {
+    "fundus",
+    "oct",
+    "fusion",
+    "fusion_cross_attention",
+    "fusion_bi_cross_attention",
+    "pseudo_oct",
+    "fusion_pseudo",
+}
+
+# Modes that load a fundus image
+_FUNDUS_MODES = {"fundus", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention", "fusion_pseudo"}
+# Modes that load a real OCT image (oct_rel column)
+_REAL_OCT_MODES = {"oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}
+# Modes that load a pseudo-OCT image (oct_pseudo_rel column)
+_PSEUDO_OCT_MODES = {"pseudo_oct", "fusion_pseudo"}
 
 
 class MultimodalEyeDataset(Dataset):
@@ -36,7 +59,11 @@ class MultimodalEyeDataset(Dataset):
         self,
         df: pd.DataFrame,
         data_root: str | Path,
-        mode: Literal["fundus", "oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"],
+        mode: Literal[
+            "fundus", "oct", "fusion",
+            "fusion_cross_attention", "fusion_bi_cross_attention",
+            "pseudo_oct", "fusion_pseudo",
+        ],
         transform_fundus: Optional[Callable] = None,
         transform_oct: Optional[Callable] = None,
         verify_files: bool = False,
@@ -52,9 +79,9 @@ class MultimodalEyeDataset(Dataset):
                 "  from google.colab import drive; drive.mount('/content/drive')"
             )
 
-        if mode in ("fundus", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention") and transform_fundus is None:
+        if mode in _FUNDUS_MODES and transform_fundus is None:
             raise ValueError(f"transform_fundus is required for mode='{mode}'")
-        if mode in ("oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention") and transform_oct is None:
+        if mode in (_REAL_OCT_MODES | _PSEUDO_OCT_MODES) and transform_oct is None:
             raise ValueError(f"transform_oct is required for mode='{mode}'")
 
         self.df = df.reset_index(drop=True)
@@ -68,26 +95,33 @@ class MultimodalEyeDataset(Dataset):
 
     def _verify_files(self) -> None:
         """Scan the dataframe for missing image files and print a summary (does not raise)."""
-        missing_fundus: list[str] = []
-        missing_oct:    list[str] = []
+        missing_fundus:      list[str] = []
+        missing_oct:         list[str] = []
+        missing_pseudo_oct:  list[str] = []
         for _, row in self.df.iterrows():
             sid = str(row["sample_id"])
-            if self.mode in ("fundus", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"):
+            if self.mode in _FUNDUS_MODES:
                 if not (self.data_root / str(row["fundus_rel"])).exists():
                     missing_fundus.append(sid)
-            if self.mode in ("oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"):
+            if self.mode in _REAL_OCT_MODES:
                 if not (self.data_root / str(row["oct_rel"])).exists():
                     missing_oct.append(sid)
+            if self.mode in _PSEUDO_OCT_MODES:
+                if not (self.data_root / str(row["oct_pseudo_rel"])).exists():
+                    missing_pseudo_oct.append(sid)
         total = len(self.df)
         print(
             f"[verify_files] total={total}  "
             f"missing_fundus={len(missing_fundus)}  "
-            f"missing_oct={len(missing_oct)}"
+            f"missing_oct={len(missing_oct)}  "
+            f"missing_pseudo_oct={len(missing_pseudo_oct)}"
         )
         if missing_fundus:
-            print(f"  First 5 missing fundus : {missing_fundus[:5]}")
+            print(f"  First 5 missing fundus      : {missing_fundus[:5]}")
         if missing_oct:
-            print(f"  First 5 missing oct    : {missing_oct[:5]}")
+            print(f"  First 5 missing oct         : {missing_oct[:5]}")
+        if missing_pseudo_oct:
+            print(f"  First 5 missing pseudo_oct  : {missing_pseudo_oct[:5]}")
 
     def __len__(self) -> int:
         return len(self.df)
@@ -110,7 +144,7 @@ class MultimodalEyeDataset(Dataset):
         out: dict = {"sample_id": sample_id, "labels": labels}
 
         # --- fundus ----------------------------------------------------------
-        if self.mode in ("fundus", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"):
+        if self.mode in _FUNDUS_MODES:
             fundus_path = self.data_root / str(row["fundus_rel"])
             if not fundus_path.exists():
                 raise FileNotFoundError(
@@ -123,8 +157,8 @@ class MultimodalEyeDataset(Dataset):
             img = Image.open(fundus_path).convert("RGB")
             out["fundus"] = self.transform_fundus(img)
 
-        # --- OCT -------------------------------------------------------------
-        if self.mode in ("oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"):
+        # --- real OCT --------------------------------------------------------
+        if self.mode in _REAL_OCT_MODES:
             oct_path = self.data_root / str(row["oct_rel"])
             if not oct_path.exists():
                 raise FileNotFoundError(
@@ -135,6 +169,20 @@ class MultimodalEyeDataset(Dataset):
                     "  Hint: verify Drive is mounted and 'oct_rel' paths are correct."
                 )
             img = Image.open(oct_path).convert("L")
+            out["oct"] = self.transform_oct(img)
+
+        # --- pseudo-OCT ------------------------------------------------------
+        if self.mode in _PSEUDO_OCT_MODES:
+            pseudo_path = self.data_root / str(row["oct_pseudo_rel"])
+            if not pseudo_path.exists():
+                raise FileNotFoundError(
+                    f"[{sample_id}] Pseudo-OCT image not found.\n"
+                    f"  data_root      : {self.data_root}\n"
+                    f"  oct_pseudo_rel : {row['oct_pseudo_rel']!r}\n"
+                    f"  full path      : {pseudo_path}\n"
+                    "  Hint: run add_pseudo_oct_column.py and verify pseudo images exist."
+                )
+            img = Image.open(pseudo_path).convert("L")
             out["oct"] = self.transform_oct(img)
 
         return out

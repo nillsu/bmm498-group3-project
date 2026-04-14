@@ -82,7 +82,11 @@ class MultimodalDataModule(pl.LightningDataModule):
         test_csv: str | Path | None = None,
     ) -> None:
         super().__init__()
-        _VALID_MODES = {"fundus", "oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}
+        _VALID_MODES = {
+            "fundus", "oct", "fusion",
+            "fusion_cross_attention", "fusion_bi_cross_attention",
+            "pseudo_oct", "fusion_pseudo",
+        }
         if mode not in _VALID_MODES:
             raise ValueError(
                 f"mode={mode!r} is not valid. Expected one of {_VALID_MODES}."
@@ -118,10 +122,22 @@ class MultimodalDataModule(pl.LightningDataModule):
 
     # ------------------------------------------------------------------
     def setup(self, stage: str | None = None) -> None:
-        _BASE_COLS = {"sample_id", "fundus_rel", "oct_rel", "DR_pos", "DME"}
+        # Columns always required regardless of mode
+        _ALWAYS_COLS = {"sample_id", "DR_pos", "DME"}
+        # Per-mode extra column requirements
+        _MODE_COLS: dict[str, set] = {
+            "fundus":                    {"fundus_rel"},
+            "oct":                       {"oct_rel"},
+            "fusion":                    {"fundus_rel", "oct_rel"},
+            "fusion_cross_attention":    {"fundus_rel", "oct_rel"},
+            "fusion_bi_cross_attention": {"fundus_rel", "oct_rel"},
+            "pseudo_oct":                {"oct_pseudo_rel"},
+            "fusion_pseudo":             {"fundus_rel", "oct_pseudo_rel"},
+        }
 
         def _check_cols(df: pd.DataFrame, extra: set, source: str) -> None:
-            missing = (_BASE_COLS | extra) - set(df.columns)
+            required = _ALWAYS_COLS | _MODE_COLS.get(self.mode, set()) | extra
+            missing = required - set(df.columns)
             if missing:
                 raise ValueError(
                     f"{source} is missing required columns: {sorted(missing)}. "
@@ -159,9 +175,9 @@ class MultimodalDataModule(pl.LightningDataModule):
             tf_o = tf_oct_train    if is_train else tf_oct_eval
             if self.mode == "fundus":
                 return {"transform_fundus": tf_f, "transform_oct": None}
-            if self.mode == "oct":
+            if self.mode in ("oct", "pseudo_oct"):
                 return {"transform_fundus": None, "transform_oct": tf_o}
-            # fusion
+            # fusion, fusion_cross_attention, fusion_bi_cross_attention, fusion_pseudo
             return {"transform_fundus": tf_f, "transform_oct": tf_o}
 
         self.train_ds = MultimodalEyeDataset(
