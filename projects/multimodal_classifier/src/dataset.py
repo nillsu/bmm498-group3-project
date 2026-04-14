@@ -44,14 +44,22 @@ _VALID_MODES = {
     "fusion_bi_cross_attention",
     "pseudo_oct",
     "fusion_pseudo",
+    "fusion_cross_attention_pseudo",
+    "fusion_bi_cross_attention_pseudo",
 }
 
 # Modes that load a fundus image
-_FUNDUS_MODES = {"fundus", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention", "fusion_pseudo"}
+_FUNDUS_MODES = {
+    "fundus", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention",
+    "fusion_pseudo", "fusion_cross_attention_pseudo", "fusion_bi_cross_attention_pseudo",
+}
 # Modes that load a real OCT image (oct_rel column)
 _REAL_OCT_MODES = {"oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}
 # Modes that load a pseudo-OCT image (oct_pseudo_rel column)
-_PSEUDO_OCT_MODES = {"pseudo_oct", "fusion_pseudo"}
+_PSEUDO_OCT_MODES = {
+    "pseudo_oct", "fusion_pseudo",
+    "fusion_cross_attention_pseudo", "fusion_bi_cross_attention_pseudo",
+}
 
 
 class MultimodalEyeDataset(Dataset):
@@ -63,6 +71,7 @@ class MultimodalEyeDataset(Dataset):
             "fundus", "oct", "fusion",
             "fusion_cross_attention", "fusion_bi_cross_attention",
             "pseudo_oct", "fusion_pseudo",
+            "fusion_cross_attention_pseudo", "fusion_bi_cross_attention_pseudo",
         ],
         transform_fundus: Optional[Callable] = None,
         transform_oct: Optional[Callable] = None,

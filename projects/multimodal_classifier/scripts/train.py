@@ -54,7 +54,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--mode",         default="fusion",
                    choices=["fundus", "oct", "fusion",
                             "fusion_cross_attention", "fusion_bi_cross_attention",
-                            "pseudo_oct", "fusion_pseudo"])
+                            "pseudo_oct", "fusion_pseudo",
+                            "fusion_cross_attention_pseudo",
+                            "fusion_bi_cross_attention_pseudo"])
     p.add_argument("--image_size",   type=int,   default=224)
     p.add_argument("--batch_size",   type=int,   default=32)
     p.add_argument("--num_workers",  type=int,   default=4)

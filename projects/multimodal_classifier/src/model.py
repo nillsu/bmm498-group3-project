@@ -26,11 +26,17 @@ from torchmetrics.classification import BinaryAUROC, BinaryAccuracy, BinaryF1Sco
 _VALID_MODES     = {
     "fundus", "oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention",
     "pseudo_oct", "fusion_pseudo",
+    "fusion_cross_attention_pseudo", "fusion_bi_cross_attention_pseudo",
 }
 
 # Maps pseudo modes to their real-OCT equivalents so all architecture
 # branches can use a single set membership test.
-_PSEUDO_ALIAS = {"pseudo_oct": "oct", "fusion_pseudo": "fusion"}
+_PSEUDO_ALIAS = {
+    "pseudo_oct":                        "oct",
+    "fusion_pseudo":                     "fusion",
+    "fusion_cross_attention_pseudo":     "fusion_cross_attention",
+    "fusion_bi_cross_attention_pseudo":  "fusion_bi_cross_attention",
+}
 
 
 def _effective_mode(mode: str) -> str:

@@ -47,7 +47,7 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     Note: oct_preprocessed (values: {split}/oct/{file}) is an older v1 preprocessing
     of the real OCT that is no longer used in training and is intentionally not mapped.
-    batch["oct"] always refers to real OCT (oct_rel); pseudo-OCT is not yet wired in.
+    batch["oct"] holds real OCT for real-OCT modes and pseudo-OCT for pseudo modes.
     """
     if df.empty:
         return df
@@ -86,6 +86,7 @@ class MultimodalDataModule(pl.LightningDataModule):
             "fundus", "oct", "fusion",
             "fusion_cross_attention", "fusion_bi_cross_attention",
             "pseudo_oct", "fusion_pseudo",
+            "fusion_cross_attention_pseudo", "fusion_bi_cross_attention_pseudo",
         }
         if mode not in _VALID_MODES:
             raise ValueError(
@@ -126,13 +127,15 @@ class MultimodalDataModule(pl.LightningDataModule):
         _ALWAYS_COLS = {"sample_id", "DR_pos", "DME"}
         # Per-mode extra column requirements
         _MODE_COLS: dict[str, set] = {
-            "fundus":                    {"fundus_rel"},
-            "oct":                       {"oct_rel"},
-            "fusion":                    {"fundus_rel", "oct_rel"},
-            "fusion_cross_attention":    {"fundus_rel", "oct_rel"},
-            "fusion_bi_cross_attention": {"fundus_rel", "oct_rel"},
-            "pseudo_oct":                {"oct_pseudo_rel"},
-            "fusion_pseudo":             {"fundus_rel", "oct_pseudo_rel"},
+            "fundus":                            {"fundus_rel"},
+            "oct":                               {"oct_rel"},
+            "fusion":                            {"fundus_rel", "oct_rel"},
+            "fusion_cross_attention":            {"fundus_rel", "oct_rel"},
+            "fusion_bi_cross_attention":         {"fundus_rel", "oct_rel"},
+            "pseudo_oct":                        {"oct_pseudo_rel"},
+            "fusion_pseudo":                     {"fundus_rel", "oct_pseudo_rel"},
+            "fusion_cross_attention_pseudo":     {"fundus_rel", "oct_pseudo_rel"},
+            "fusion_bi_cross_attention_pseudo":  {"fundus_rel", "oct_pseudo_rel"},
         }
 
         def _check_cols(df: pd.DataFrame, extra: set, source: str) -> None:
