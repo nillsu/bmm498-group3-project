@@ -22,7 +22,8 @@ from pathlib import Path
 
 import pandas as pd
 
-MODES = ["fundus", "oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"]
+MODES = ["fundus", "oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention",
+         "pseudo_oct", "fusion_pseudo"]
 _ABLATION_SCRIPT = Path(__file__).resolve().parent / "run_ablation.py"
 
 
