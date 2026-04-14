@@ -1,38 +1,42 @@
 """
 add_pseudo_oct_column.py
-────────────────────────
-Extends existing split CSVs with an oct_pseudo_rel column derived from the
-real OCT path (oct_preprocessed_v2 / oct_rel).
+Extends existing split CSVs with oct_pseudo_rel + pseudo_exists columns,
+then writes a filtered _pseudo_available.csv containing only rows where
+the pseudo image was found on disk.
 
-Derivation rule
-───────────────
-Real OCT  :  <split>/oct_real/<base_id>_oct_v2.jpg
-Pseudo-OCT:  <split>/pseudo-oct/<base_id>_fake_B.png
+Derivation rule (split-aware)
+------------------------------
+  train / val : <split>/pseudo-oct/<base_id>_fundus_oct.png
+  test        : <split>/pseudo-oct/<base_id>_fake_B.png
 
-where base_id is the filename stem with _oct_v2 stripped.
-
-Example
-───────
-oct_rel = "train/oct_real/1984_OD_000054_oct_v2.jpg"
-  → oct_pseudo_rel = "train/pseudo-oct/1984_OD_000054_fake_B.png"
+  base_id is the real OCT stem with _oct_v2 stripped:
+    train/oct_real/1221_OD_000000_oct_v2.jpg  ->  1221_OD_000000
 
 Usage (Colab)
-─────────────
-# Process all three CSVs at once:
+-------------
+# Process all three splits, validate against data_root:
 !python add_pseudo_oct_column.py \\
     --csv dataset_csv/pairs_train_oct_v2.csv \\
           dataset_csv/pairs_val_oct_v2.csv   \\
           dataset_csv/pairs_test_oct_v2.csv  \\
-    --out dataset_csv/pairs_train_with_pseudo.csv \\
-          dataset_csv/pairs_val_with_pseudo.csv   \\
-          dataset_csv/pairs_test_with_pseudo.csv  \\
     --data_root /content/bmm498_data
 
-# Validate only (no output written):
+# Custom output paths:
 !python add_pseudo_oct_column.py \\
     --csv dataset_csv/pairs_train_oct_v2.csv \\
-    --data_root /content/bmm498_data \\
+    --out dataset_csv/pairs_train_with_pseudo.csv \\
+    --data_root /content/bmm498_data
+
+# Derive paths only, no disk check, no files written:
+!python add_pseudo_oct_column.py \\
+    --csv dataset_csv/pairs_train_oct_v2.csv \\
     --dry_run
+
+Output files (when not --dry_run and --data_root provided)
+-----------------------------------------------------------
+  pairs_train_with_pseudo.csv          -- all rows + oct_pseudo_rel + pseudo_exists
+  pairs_train_pseudo_available.csv     -- only rows where pseudo_exists == True
+  (same for val / test)
 """
 
 from __future__ import annotations
@@ -44,58 +48,35 @@ from pathlib import Path, PurePosixPath
 import pandas as pd
 
 
-# ── path derivation ──────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Path derivation
+# ---------------------------------------------------------------------------
 
-def derive_pseudo_path(oct_rel: str) -> str:
-    """
-    Derive the pseudo-OCT relative path from the real OCT relative path.
-
-    Input  : "train/oct_real/1984_OD_000054_oct_v2.jpg"
-    Output : "train/pseudo-oct/1984_OD_000054_fake_B.png"
-    """
-    p = PurePosixPath(oct_rel.replace("\\", "/"))
-    # The base_id is the stem of the real OCT file, with _oct_v2 removed.
-    # Handles both _oct_v2 (standard) and any other suffix gracefully.
-    stem = p.stem  # e.g. "1984_OD_000054_oct_v2"
+def _base_id(oct_rel: str) -> str:
+    """Strip suffix from real OCT stem to get the shared base identifier."""
+    stem = PurePosixPath(oct_rel.replace("\\", "/")).stem  # e.g. 1221_OD_000000_oct_v2
     if stem.endswith("_oct_v2"):
-        base_id = stem[: -len("_oct_v2")]
-    else:
-        # Fallback: strip last underscore-delimited token and hope for the best.
-        base_id = "_".join(stem.split("_")[:-1])
-    split_dir = p.parts[0]  # "train" / "val" / "test"
-    return f"{split_dir}/pseudo-oct/{base_id}_fake_B.png"
+        return stem[: -len("_oct_v2")]
+    # Fallback: drop last underscore-delimited token
+    return "_".join(stem.split("_")[:-1])
 
 
-# ── validation ───────────────────────────────────────────────────────────────
-
-def validate_pseudo_paths(
-    df: pd.DataFrame,
-    data_root: Path,
-    source_label: str,
-) -> tuple[int, list[str]]:
+def derive_pseudo_path(oct_rel: str, split: str) -> str:
     """
-    Check that every oct_pseudo_rel path exists under data_root.
-    Returns (n_missing, list_of_missing_sample_ids).
+    Derive pseudo-OCT relative path from real OCT path and split name.
+
+    train/val: <split>/pseudo-oct/<base_id>_fundus_oct.png
+    test     : <split>/pseudo-oct/<base_id>_fake_B.png
     """
-    missing = []
-    for _, row in df.iterrows():
-        full = data_root / str(row["oct_pseudo_rel"])
-        if not full.exists():
-            missing.append(str(row.get("sample_id", row.name)))
-    if missing:
-        print(
-            f"  [{source_label}] MISSING {len(missing)}/{len(df)} pseudo-OCT files."
-        )
-        for sid in missing[:10]:
-            print(f"    - {sid}")
-        if len(missing) > 10:
-            print(f"    ... and {len(missing) - 10} more.")
-    else:
-        print(f"  [{source_label}] All {len(df)} pseudo-OCT files found.")
-    return len(missing), missing
+    split_dir = PurePosixPath(oct_rel.replace("\\", "/")).parts[0]
+    base      = _base_id(oct_rel)
+    suffix    = "_fake_B.png" if split == "test" else "_fundus_oct.png"
+    return f"{split_dir}/pseudo-oct/{base}{suffix}"
 
 
-# ── column normalisation (mirrors datamodule._normalize_columns) ─────────────
+# ---------------------------------------------------------------------------
+# Column normalisation (mirrors datamodule._normalize_columns)
+# ---------------------------------------------------------------------------
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -109,7 +90,9 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ── main ─────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Per-CSV processing
+# ---------------------------------------------------------------------------
 
 def process_csv(
     csv_path: Path,
@@ -117,50 +100,113 @@ def process_csv(
     data_root: Path | None,
     dry_run: bool,
 ) -> bool:
-    """Process one CSV file. Returns True if all pseudo files were found."""
+    """
+    Load csv_path, derive oct_pseudo_rel, optionally validate existence,
+    save all-rows CSV and (when data_root given) the available-only CSV.
+    Returns True if all pseudo files were found (or data_root not provided).
+    """
     print(f"\nProcessing : {csv_path}")
 
     df = pd.read_csv(csv_path)
     df = _normalize_columns(df)
 
-    # Source column for deriving pseudo path
     if "oct_rel" not in df.columns:
-        print(f"  [ERROR] Neither 'oct_rel' nor 'oct_preprocessed_v2' found in {csv_path}.")
-        print(f"  Available columns: {list(df.columns)}")
+        print(f"  [ERROR] 'oct_rel'/'oct_preprocessed_v2' not found in {csv_path}.")
+        print(f"  Columns present: {list(df.columns)}")
         return False
 
-    # Derive oct_pseudo_rel
-    df["oct_pseudo_rel"] = df["oct_rel"].apply(derive_pseudo_path)
+    if "split" not in df.columns:
+        print(f"  [ERROR] 'split' column not found in {csv_path}.")
+        return False
 
-    # Show a few examples
-    print("  Sample derivations:")
-    for _, row in df.head(3).iterrows():
-        print(f"    {row['oct_rel']!r}")
-        print(f"    -> {row['oct_pseudo_rel']!r}")
+    # Derive oct_pseudo_rel row-by-row (split-aware)
+    df["oct_pseudo_rel"] = df.apply(
+        lambda r: derive_pseudo_path(r["oct_rel"], str(r["split"])),
+        axis=1,
+    )
 
-    # Validate files if data_root given
-    all_ok = True
+    # Show 5 example derivations
+    print("  Sample derivations (first 5 rows):")
+    for _, row in df.head(5).iterrows():
+        print(f"    [{row['split']}] {row['oct_rel']!r}")
+        print(f"           -> {row['oct_pseudo_rel']!r}")
+
+    # ------------------------------------------------------------------
+    # File-existence check
+    # ------------------------------------------------------------------
     if data_root is not None:
-        label = csv_path.name
-        n_missing, _ = validate_pseudo_paths(df, data_root, label)
+        found_mask   = df["oct_pseudo_rel"].apply(
+            lambda p: (data_root / p).exists()
+        )
+        df["pseudo_exists"] = found_mask
+
+        n_total   = len(df)
+        n_found   = int(found_mask.sum())
+        n_missing = n_total - n_found
+
+        print(f"\n  Existence check against: {data_root}")
+        print(f"    Total    : {n_total}")
+        print(f"    Found    : {n_found}")
+        print(f"    Missing  : {n_missing}")
+
+        missing_ids = df.loc[~found_mask, "sample_id"].tolist()
+        if missing_ids:
+            print(f"    First 10 missing sample_ids:")
+            for sid in missing_ids[:10]:
+                print(f"      - {sid}")
+            if len(missing_ids) > 10:
+                print(f"      ... and {len(missing_ids) - 10} more")
+
         all_ok = n_missing == 0
     else:
-        print("  [INFO] --data_root not provided; skipping file-existence validation.")
+        df["pseudo_exists"] = False      # unknown — not checked
+        print("  [INFO] --data_root not provided; pseudo_exists set to False (unvalidated).")
+        print("         Pass --data_root to validate file existence.")
+        all_ok = True   # nothing to fail on
 
+    # ------------------------------------------------------------------
     # Save
-    if not dry_run:
+    # ------------------------------------------------------------------
+    if dry_run:
+        print(f"  [dry_run] Would save all-rows CSV to:       {out_path}")
+        if data_root is not None:
+            avail_path = _available_path(out_path, df)
+            print(f"  [dry_run] Would save available-only CSV to: {avail_path}")
+    else:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(out_path, index=False)
-        print(f"  Saved → {out_path}  ({len(df)} rows, columns: {list(df.columns)})")
-    else:
-        print(f"  [dry_run] Would save to {out_path}")
+        print(f"  Saved all-rows CSV     -> {out_path}  ({len(df)} rows)")
+
+        if data_root is not None:
+            df_avail   = df[df["pseudo_exists"]].reset_index(drop=True)
+            avail_path = _available_path(out_path, df)
+            df_avail.to_csv(avail_path, index=False)
+            print(f"  Saved available CSV    -> {avail_path}  ({len(df_avail)} rows)")
 
     return all_ok
 
 
+def _available_path(out_path: Path, df: pd.DataFrame) -> Path:
+    """
+    Derive the _pseudo_available.csv output path.
+    Uses the split value from the first row to produce the canonical name:
+        pairs_{split}_pseudo_available.csv
+    in the same directory as out_path.
+    """
+    split_name = str(df["split"].iloc[0]).strip().lower()
+    return out_path.parent / f"pairs_{split_name}_pseudo_available.csv"
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Add oct_pseudo_rel column to existing split CSVs."
+        description=(
+            "Add oct_pseudo_rel and pseudo_exists columns to split CSVs, "
+            "and write filtered _pseudo_available.csv files."
+        )
     )
     parser.add_argument(
         "--csv", nargs="+", required=True,
@@ -169,17 +215,20 @@ def main() -> None:
     parser.add_argument(
         "--out", nargs="+", default=None,
         help=(
-            "Output paths, one per input CSV. "
-            "Defaults to <input_stem>_with_pseudo.csv in the same directory."
+            "Output paths for the all-rows CSVs, one per input. "
+            "Defaults to <stem>_with_pseudo.csv in the same directory."
         ),
     )
     parser.add_argument(
         "--data_root", default=None,
-        help="Image root directory. When provided, validates that every pseudo-OCT file exists.",
+        help=(
+            "Image root directory. When provided: validates file existence, "
+            "fills pseudo_exists, and writes _pseudo_available.csv files."
+        ),
     )
     parser.add_argument(
         "--dry_run", action="store_true",
-        help="Derive and validate paths but do NOT write output files.",
+        help="Derive paths and validate existence but do NOT write any files.",
     )
     args = parser.parse_args()
 
@@ -189,12 +238,11 @@ def main() -> None:
         if len(args.out) != len(csv_paths):
             print(
                 f"[ERROR] --out must have the same number of entries as --csv "
-                f"(got {len(args.out)} vs {len(csv_paths)})."
+                f"({len(args.out)} vs {len(csv_paths)})."
             )
             sys.exit(1)
         out_paths = [Path(p) for p in args.out]
     else:
-        # Default: same directory, _with_pseudo suffix
         out_paths = [
             p.parent / (p.stem + "_with_pseudo" + p.suffix)
             for p in csv_paths
@@ -202,30 +250,29 @@ def main() -> None:
 
     data_root = Path(args.data_root) if args.data_root else None
     if data_root is not None and not data_root.exists():
-        print(f"[WARNING] data_root does not exist: {data_root}  (skipping file validation)")
+        print(f"[WARNING] data_root not found: {data_root}  (skipping file validation)")
         data_root = None
 
-    print("=" * 60)
+    print("=" * 65)
     print("  add_pseudo_oct_column.py")
-    print("=" * 60)
+    print("=" * 65)
 
     results = []
     for csv_path, out_path in zip(csv_paths, out_paths):
         if not csv_path.exists():
-            print(f"\n[ERROR] Input CSV not found: {csv_path}")
+            print(f"\n[ERROR] CSV not found: {csv_path}")
             results.append(False)
             continue
         ok = process_csv(csv_path, out_path, data_root, args.dry_run)
         results.append(ok)
 
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 65)
     if all(results):
-        print("  DONE — all pseudo-OCT paths validated successfully.")
+        print("  DONE - all pseudo-OCT paths accounted for.")
     else:
-        print("  DONE with WARNINGS — some pseudo-OCT files were missing (see above).")
-        print("  Rows with missing pseudo-OCT files are still included in the output CSV.")
-        print("  Re-run after generating the missing pseudo images.")
-    print("=" * 60)
+        print("  DONE with WARNINGS - some pseudo-OCT files were missing.")
+        print("  Use the _pseudo_available.csv files for training.")
+    print("=" * 65)
 
 
 if __name__ == "__main__":

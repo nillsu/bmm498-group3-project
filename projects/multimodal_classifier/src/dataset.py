@@ -173,6 +173,21 @@ class MultimodalEyeDataset(Dataset):
 
         # --- pseudo-OCT ------------------------------------------------------
         if self.mode in _PSEUDO_OCT_MODES:
+            # Fast pre-check: if the CSV already tells us this file is absent, fail
+            # clearly instead of hitting a FileNotFoundError at open time.
+            if "pseudo_exists" in self.df.columns:
+                pe = row["pseudo_exists"]
+                try:
+                    is_absent = not bool(pe)
+                except (TypeError, ValueError):
+                    is_absent = False   # pd.NA / unknown — let the file check below decide
+                if is_absent:
+                    raise ValueError(
+                        f"[{sample_id}] pseudo_exists=False — no pseudo-OCT image for this sample.\n"
+                        f"  Use pairs_{{split}}_pseudo_available.csv to train only on available samples.\n"
+                        f"  Run: python add_pseudo_oct_column.py --data_root <root> to regenerate."
+                    )
+
             pseudo_path = self.data_root / str(row["oct_pseudo_rel"])
             if not pseudo_path.exists():
                 raise FileNotFoundError(
@@ -180,7 +195,8 @@ class MultimodalEyeDataset(Dataset):
                     f"  data_root      : {self.data_root}\n"
                     f"  oct_pseudo_rel : {row['oct_pseudo_rel']!r}\n"
                     f"  full path      : {pseudo_path}\n"
-                    "  Hint: run add_pseudo_oct_column.py and verify pseudo images exist."
+                    "  Hint: use pairs_{split}_pseudo_available.csv (only verified rows).\n"
+                    "  Run: python add_pseudo_oct_column.py --data_root <root> to regenerate."
                 )
             img = Image.open(pseudo_path).convert("L")
             out["oct"] = self.transform_oct(img)

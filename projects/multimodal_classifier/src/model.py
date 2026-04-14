@@ -1,8 +1,18 @@
 """
 MultimodalClassifier — PyTorch Lightning module for fundus + OCT classification.
 
-Supports five modes: fundus, oct, fusion, fusion_cross_attention, fusion_bi_cross_attention.
-Mid-level fusion: two ResNet-18 encoders, per-branch heads plus a fusion head.
+Supported modes
+---------------
+  fundus                    — RGB fundus only
+  oct                       — grayscale real-OCT only
+  fusion                    — fundus + real-OCT (concat fusion)
+  fusion_cross_attention    — fundus + real-OCT (cross-attention)
+  fusion_bi_cross_attention — fundus + real-OCT (bidirectional cross-attention)
+  pseudo_oct                — grayscale pseudo-OCT only  [alias of oct branch]
+  fusion_pseudo             — fundus + pseudo-OCT (concat fusion) [alias of fusion branch]
+
+Pseudo-OCT modes share encoders/heads with their real-OCT counterparts.
+No new weights are introduced; the difference is purely in the data pipeline.
 """
 
 from __future__ import annotations
@@ -13,7 +23,19 @@ import pytorch_lightning as pl
 import timm
 from torchmetrics.classification import BinaryAUROC, BinaryAccuracy, BinaryF1Score
 
-_VALID_MODES     = {"fundus", "oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}
+_VALID_MODES     = {
+    "fundus", "oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention",
+    "pseudo_oct", "fusion_pseudo",
+}
+
+# Maps pseudo modes to their real-OCT equivalents so all architecture
+# branches can use a single set membership test.
+_PSEUDO_ALIAS = {"pseudo_oct": "oct", "fusion_pseudo": "fusion"}
+
+
+def _effective_mode(mode: str) -> str:
+    """Resolve pseudo modes to their real-OCT structural equivalents."""
+    return _PSEUDO_ALIAS.get(mode, mode)
 _VALID_BACKBONES = {"resnet18", "resnet34", "efficientnet_b0"}
 
 
@@ -129,24 +151,24 @@ class MultimodalClassifier(pl.LightningModule):
             raise ValueError(f"backbone={backbone!r} must be one of {_VALID_BACKBONES}.")
         self.save_hyperparameters()
         self.mode = mode
+        emode = _effective_mode(mode)  # resolves pseudo_oct->oct, fusion_pseudo->fusion
 
         # Build encoders only for needed branches
-        if mode in {"fundus", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}:
+        if emode in {"fundus", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}:
             self.fundus_encoder = _make_encoder(backbone, in_chans=3, pretrained=pretrained)
             fundus_dim = _infer_dim(self.fundus_encoder, in_chans=3)
             self.fundus_head = nn.Linear(fundus_dim, 2)
         else:
             fundus_dim = 0
 
-        if mode in {"oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}:
+        if emode in {"oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}:
             self.oct_encoder = _make_encoder(backbone, in_chans=1, pretrained=pretrained)
             oct_dim = _infer_dim(self.oct_encoder, in_chans=1)
-            if mode in {"oct", "fusion", "fusion_cross_attention", "fusion_bi_cross_attention"}:
-                self.oct_head = nn.Linear(oct_dim, 2)
+            self.oct_head = nn.Linear(oct_dim, 2)
         else:
             oct_dim = 0
 
-        if mode == "fusion":
+        if emode == "fusion":
             fused_dim = fundus_dim + oct_dim
             self.fusion_head = nn.Sequential(
                 nn.Linear(fused_dim, fused_dim // 2),
@@ -155,7 +177,7 @@ class MultimodalClassifier(pl.LightningModule):
                 nn.Linear(fused_dim // 2, 2),
             )
 
-        if mode == "fusion_cross_attention":
+        if emode == "fusion_cross_attention":
             f_feat_dim = _infer_feat_dim(self.fundus_encoder, in_chans=3)
             o_feat_dim = _infer_feat_dim(self.oct_encoder,    in_chans=1)
             attn_dim   = f_feat_dim
@@ -165,7 +187,7 @@ class MultimodalClassifier(pl.LightningModule):
                 embed_dim=attn_dim, num_heads=attn_heads, dropout=attn_dropout,
             )
 
-        if mode == "fusion_bi_cross_attention":
+        if emode == "fusion_bi_cross_attention":
             f_feat_dim = _infer_feat_dim(self.fundus_encoder, in_chans=3)
             o_feat_dim = _infer_feat_dim(self.oct_encoder,    in_chans=1)
             attn_dim   = f_feat_dim
@@ -197,14 +219,18 @@ class MultimodalClassifier(pl.LightningModule):
 
     # ------------------------------------------------------------------
     def forward(self, batch: dict) -> torch.Tensor:
-        if self.mode == "fundus":
+        emode = _effective_mode(self.mode)
+
+        if emode == "fundus":
             if "fundus" not in batch:
-                raise KeyError("mode='fundus' requires batch['fundus'] but key is missing.")
+                raise KeyError(f"mode='{self.mode}' requires batch['fundus'] but key is missing.")
             return self.fundus_head(self.fundus_encoder(batch["fundus"]))
 
-        if self.mode == "oct":
+        if emode == "oct":
+            # Covers both 'oct' (real OCT) and 'pseudo_oct' (pseudo-OCT).
+            # In both cases the data pipeline stores the image under batch["oct"].
             if "oct" not in batch:
-                raise KeyError("mode='oct' requires batch['oct'] but key is missing.")
+                raise KeyError(f"mode='{self.mode}' requires batch['oct'] but key is missing.")
             return self.oct_head(self.oct_encoder(batch["oct"]))
 
         if "fundus" not in batch:
@@ -212,7 +238,7 @@ class MultimodalClassifier(pl.LightningModule):
         if "oct" not in batch:
             raise KeyError(f"mode='{self.mode}' requires batch['oct'] but key is missing.")
 
-        if self.mode == "fusion_cross_attention":
+        if emode == "fusion_cross_attention":
             f_feat = self.fundus_encoder.forward_features(batch["fundus"])
             o_feat = self.oct_encoder.forward_features(batch["oct"])
             q  = self.f_attn_proj(_feat_to_tokens(f_feat))  # (B, N_q,  attn_dim)
@@ -221,7 +247,7 @@ class MultimodalClassifier(pl.LightningModule):
             pooled = fused.mean(dim=1)                      # (B, attn_dim)
             return self.fundus_head(pooled)
 
-        if self.mode == "fusion_bi_cross_attention":
+        if emode == "fusion_bi_cross_attention":
             f_feat = self.fundus_encoder.forward_features(batch["fundus"])
             o_feat = self.oct_encoder.forward_features(batch["oct"])
             f_tok = self.bi_f_proj(_feat_to_tokens(f_feat))  # (B, N_f, attn_dim)
@@ -256,20 +282,24 @@ class MultimodalClassifier(pl.LightningModule):
         (post-fusion pooled) and the auxiliary fundus path (pre-fusion pooled).
         forward() is left unchanged so all external callers receive main logits only.
         """
-        if self.mode in {"fundus", "oct"} or self.hparams.model_variant == "baseline":
+        emode = _effective_mode(self.mode)
+
+        # Unimodal modes (real or pseudo OCT-only, fundus-only) have no aux heads.
+        if emode in {"fundus", "oct"} or self.hparams.model_variant == "baseline":
             return self(batch), None, None
 
         fundus_img = batch["fundus"]
         oct_img    = batch["oct"]
 
-        if self.mode == "fusion":
+        if emode == "fusion":
+            # Covers 'fusion' (real OCT) and 'fusion_pseudo' (pseudo-OCT).
             f_feat = self.fundus_encoder(fundus_img)
             o_feat = self.oct_encoder(oct_img)
             main   = self.fusion_head(torch.cat([f_feat, o_feat], dim=1))
             f_aux  = self.fundus_head(f_feat)
             o_aux  = self.oct_head(o_feat)
 
-        elif self.mode == "fusion_cross_attention":
+        elif emode == "fusion_cross_attention":
             f_feat   = self.fundus_encoder.forward_features(fundus_img)
             o_feat   = self.oct_encoder.forward_features(oct_img)
             f_pooled = _pool_features(f_feat)
